@@ -1,0 +1,261 @@
+"""
+Rotas do ciclo de avaliação (secção 3) — a máquina de seis fases.
+"""
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.models.user import User
+from app.models.enums import UserRole, EvaluationPhase
+from app.models.evaluation import EvaluationCycle, Evaluation
+from app.schemas.evaluation import (
+    CycleCreate, CycleOut, EvaluationCreate, EvaluationOut,
+    FormAnswers, AppealRequest, CommissionDecisionRequest,
+)
+from app.api.deps import get_current_user, require_roles
+from app.services.evaluation_scoring import compute_score
+from app.services.notifications import notify
+
+router = APIRouter(prefix="/evaluations", tags=["evaluations"])
+
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+
+
+def _get_eval_or_404(db: Session, company_id: int, evaluation_id: int) -> Evaluation:
+    ev = (
+        db.query(Evaluation)
+        .filter(Evaluation.id == evaluation_id, Evaluation.company_id == company_id)
+        .first()
+    )
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
+    return ev
+
+
+def _require_phase(ev: Evaluation, expected: EvaluationPhase):
+    if ev.phase != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ação inválida nesta fase. A avaliação está em '{ev.phase.value}', esperava-se '{expected.value}'.",
+        )
+
+
+@router.post("/cycles", response_model=CycleOut, status_code=status.HTTP_201_CREATED)
+def create_cycle(
+    payload: CycleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    cycle = EvaluationCycle(company_id=current_user.company_id, name=payload.name)
+    db.add(cycle)
+    db.commit()
+    db.refresh(cycle)
+    return cycle
+
+
+@router.get("/cycles", response_model=list[CycleOut])
+def list_cycles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.company_id == current_user.company_id)
+        .order_by(EvaluationCycle.created_at.desc())
+        .all()
+    )
+
+
+@router.post("", response_model=EvaluationOut, status_code=status.HTTP_201_CREATED)
+def create_evaluation(
+    payload: EvaluationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    company_id = current_user.company_id
+
+    cycle = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.id == payload.cycle_id, EvaluationCycle.company_id == company_id)
+        .first()
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+
+    for uid, label in [(payload.collaborator_id, "Colaborador"), (payload.director_id, "Director")]:
+        u = db.query(User).filter(User.id == uid, User.company_id == company_id).first()
+        if u is None:
+            raise HTTPException(status_code=404, detail=f"{label} não encontrado nesta empresa.")
+
+    ev = Evaluation(
+        company_id=company_id,
+        cycle_id=payload.cycle_id,
+        collaborator_id=payload.collaborator_id,
+        director_id=payload.director_id,
+        category=payload.category,
+        phase=EvaluationPhase.AUTOAVALIACAO,
+    )
+    db.add(ev)
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.get("/{evaluation_id}", response_model=EvaluationOut)
+def get_evaluation(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _get_eval_or_404(db, current_user.company_id, evaluation_id)
+
+
+@router.post("/{evaluation_id}/self-assessment", response_model=EvaluationOut)
+def submit_self_assessment(
+    evaluation_id: int,
+    answers: FormAnswers,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.AUTOAVALIACAO)
+    if ev.collaborator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o próprio colaborador pode submeter a autoavaliação.")
+
+    ev.self_answers = answers.model_dump_json()
+    ev.phase = EvaluationPhase.AVALIACAO_DIRECTOR
+
+    notify(
+        db, company_id=ev.company_id, user_id=ev.director_id,
+        title="Autoavaliação submetida",
+        message="Um colaborador submeteu a autoavaliação. Já pode avaliar.",
+        category="avaliacao", link=f"/evaluations/{ev.id}",
+    )
+
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.post("/{evaluation_id}/director-assessment", response_model=EvaluationOut)
+def submit_director_assessment(
+    evaluation_id: int,
+    answers: FormAnswers,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.AVALIACAO_DIRECTOR)
+    if ev.director_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o director designado pode avaliar.")
+
+    data = answers.model_dump()
+    score, classification = compute_score(data, ev.category)
+
+    ev.director_answers = answers.model_dump_json()
+    ev.final_score = score
+    ev.classification = classification
+    ev.phase = EvaluationPhase.CONCORDANCIA
+
+    notify(
+        db, company_id=ev.company_id, user_id=ev.collaborator_id,
+        title="Avaliação disponível",
+        message="A sua chefia concluiu a avaliação. Pode aceitar ou recorrer.",
+        category="avaliacao", link=f"/evaluations/{ev.id}",
+    )
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.post("/{evaluation_id}/accept", response_model=EvaluationOut)
+def accept_evaluation(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.CONCORDANCIA)
+    if ev.collaborator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o próprio colaborador pode aceitar.")
+
+    ev.phase = EvaluationPhase.FECHADA
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.post("/{evaluation_id}/appeal", response_model=EvaluationOut)
+def appeal_evaluation(
+    evaluation_id: int,
+    payload: AppealRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.CONCORDANCIA)
+    if ev.collaborator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o próprio colaborador pode recorrer.")
+
+    ev.appeal_reason = payload.reason
+    ev.phase = EvaluationPhase.COMISSAO
+
+    comissao = (
+        db.query(User)
+        .filter(User.company_id == ev.company_id, User.role == UserRole.COMISSAO_AVALIACAO)
+        .all()
+    )
+    for membro in comissao:
+        notify(
+            db, company_id=ev.company_id, user_id=membro.id,
+            title="Recurso de avaliação",
+            message="Foi submetido um recurso de avaliação para decisão da comissão.",
+            category="avaliacao", link=f"/evaluations/{ev.id}",
+        )
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.post("/{evaluation_id}/commission-decision", response_model=EvaluationOut)
+def commission_decision(
+    evaluation_id: int,
+    payload: CommissionDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.COMISSAO_AVALIACAO)),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.COMISSAO)
+
+    ev.commission_decision = payload.decision
+    ev.phase = EvaluationPhase.FECHADA
+    notify(
+        db, company_id=ev.company_id, user_id=ev.collaborator_id,
+        title="Decisão da comissão",
+        message="A comissão decidiu sobre o seu recurso.",
+        category="avaliacao", link=f"/evaluations/{ev.id}",
+    )
+    notify(
+        db, company_id=ev.company_id, user_id=ev.director_id,
+        title="Decisão da comissão",
+        message="A comissão decidiu sobre um recurso de uma avaliação da sua equipa.",
+        category="avaliacao", link=f"/evaluations/{ev.id}",
+    )
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@router.post("/{evaluation_id}/validate", response_model=EvaluationOut)
+def validate_evaluation(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO)),
+):
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    _require_phase(ev, EvaluationPhase.FECHADA)
+
+    ev.phase = EvaluationPhase.VALIDADA
+    db.commit()
+    db.refresh(ev)
+    return ev

@@ -1,0 +1,207 @@
+"""
+Rotas do processo disciplinar (secção 4) — a segunda máquina de seis fases.
+"""
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.models.user import User
+from app.models.enums import UserRole, DisciplinaryPhase, DisciplinaryOutcome
+from app.models.disciplinary import DisciplinaryProcess
+from app.schemas.disciplinary import (
+    ProcessCreate, ChargeNoteRequest, DefenseRequest, DecisionRequest, ProcessOut,
+)
+from app.api.deps import get_current_user, require_roles
+from app.services.notifications import notify
+
+router = APIRouter(prefix="/disciplinary", tags=["disciplinary"])
+
+INSTRUCTOR_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def _get_or_404(db: Session, company_id: int, process_id: int) -> DisciplinaryProcess:
+    p = (
+        db.query(DisciplinaryProcess)
+        .filter(DisciplinaryProcess.id == process_id, DisciplinaryProcess.company_id == company_id)
+        .first()
+    )
+    if p is None:
+        raise HTTPException(status_code=404, detail="Processo não encontrado.")
+    return p
+
+
+def _require_phase(p: DisciplinaryProcess, expected: DisciplinaryPhase):
+    if p.phase != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ação inválida nesta fase. O processo está em '{p.phase.value}', esperava-se '{expected.value}'.",
+        )
+
+
+@router.post("", response_model=ProcessOut, status_code=status.HTTP_201_CREATED)
+def open_process(
+    payload: ProcessCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
+):
+    accused = (
+        db.query(User)
+        .filter(User.id == payload.accused_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if accused is None:
+        raise HTTPException(status_code=404, detail="Arguido não encontrado nesta empresa.")
+
+    p = DisciplinaryProcess(
+        company_id=current_user.company_id,
+        accused_id=payload.accused_id,
+        instructor_id=current_user.id,
+        reference=payload.reference,
+        imputed_facts=payload.imputed_facts,
+        disciplinary_record=payload.disciplinary_record,
+        phase=DisciplinaryPhase.INSTAURACAO,
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.get("/{process_id}", response_model=ProcessOut)
+def get_process(
+    process_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    if current_user.role not in INSTRUCTOR_ROLES and p.accused_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Sem acesso a este processo.")
+    return p
+
+
+@router.post("/{process_id}/charge-note", response_model=ProcessOut)
+def issue_charge_note(
+    process_id: int,
+    payload: ChargeNoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    _require_phase(p, DisciplinaryPhase.INSTAURACAO)
+
+    p.charge_note = payload.charge_note
+    p.preventive_suspension = payload.preventive_suspension
+    p.phase = DisciplinaryPhase.NOTA_CULPA
+    notify(
+        db, company_id=p.company_id, user_id=p.accused_id,
+        title="Nota de culpa",
+        message="Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
+        category="disciplina", link=f"/disciplinary/{p.id}",
+    )
+
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post("/{process_id}/acknowledge-charge", response_model=ProcessOut)
+def acknowledge_charge(
+    process_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    _require_phase(p, DisciplinaryPhase.NOTA_CULPA)
+    if p.accused_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o arguido pode assinar a tomada de conhecimento.")
+
+    p.charge_ack_at = _now()
+    p.phase = DisciplinaryPhase.DEFESA
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post("/{process_id}/defense", response_model=ProcessOut)
+def submit_defense(
+    process_id: int,
+    payload: DefenseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    _require_phase(p, DisciplinaryPhase.DEFESA)
+    if p.accused_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o arguido pode submeter a defesa.")
+
+    p.defense_text = payload.defense_text
+    p.defense_submitted_at = _now()
+    p.phase = DisciplinaryPhase.DECISAO
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post("/{process_id}/decision", response_model=ProcessOut)
+def issue_decision(
+    process_id: int,
+    payload: DecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    _require_phase(p, DisciplinaryPhase.DECISAO)
+
+    p.decision_text = payload.decision_text
+    p.outcome = payload.outcome
+    p.phase = DisciplinaryPhase.CONHECIMENTO_DECISAO
+    notify(
+        db, company_id=p.company_id, user_id=p.accused_id,
+        title="Decisão disciplinar",
+        message="Foi emitida a decisão do seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
+        category="disciplina", link=f"/disciplinary/{p.id}",
+    )
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post("/{process_id}/acknowledge-decision", response_model=ProcessOut)
+def acknowledge_decision(
+    process_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    p = _get_or_404(db, current_user.company_id, process_id)
+    _require_phase(p, DisciplinaryPhase.CONHECIMENTO_DECISAO)
+    if p.accused_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Só o arguido pode assinar o conhecimento da decisão.")
+
+    p.decision_ack_at = _now()
+    p.phase = DisciplinaryPhase.ARQUIVADO
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.get("/collaborator/{accused_id}", response_model=list[ProcessOut])
+def list_processes_of_collaborator(
+    accused_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
+):
+    return (
+        db.query(DisciplinaryProcess)
+        .filter(
+            DisciplinaryProcess.company_id == current_user.company_id,
+            DisciplinaryProcess.accused_id == accused_id,
+        )
+        .order_by(DisciplinaryProcess.created_at.desc())
+        .all()
+    )
