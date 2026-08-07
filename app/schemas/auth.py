@@ -43,6 +43,7 @@ class TokenResponse(BaseModel):
 class UserOut(BaseModel):
     id: int
     company_id: int
+    company_name: str | None = None
     email: EmailStr
     full_name: str
     role: UserRole

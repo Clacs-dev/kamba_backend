@@ -101,6 +101,19 @@ def login_form(
     return TokenResponse(access_token=token)
 
 @router.get("/me", response_model=UserOut)
-def me(current_user: User = Depends(get_current_user)):
-    """Devolve o utilizador autenticado — útil para o frontend confirmar a sessão."""
-    return current_user
+def me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Devolve o utilizador autenticado, incluindo o nome da sua empresa."""
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    return UserOut(
+        id=current_user.id,
+        company_id=current_user.company_id,
+        company_name=company.name if company else None,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at,
+    )
