@@ -168,3 +168,72 @@ def get_results(
         results=results,
         note="Resultados agregados.",
     )
+
+
+# ---------- Relatório de cultura (editado pelo Capital Humano) ----------
+
+import json as _json
+from app.models.culture_report import CultureReport
+from app.schemas.culture_report import CultureReportIn, CultureReportOut, DimensionRow
+
+
+def _report_to_out(r: CultureReport | None) -> CultureReportOut:
+    if r is None:
+        return CultureReportOut()
+    dims = []
+    if r.dimensions_json:
+        try:
+            dims = [DimensionRow(**d) for d in _json.loads(r.dimensions_json)]
+        except Exception:
+            dims = []
+    recs = []
+    if r.recommendations_json:
+        try:
+            recs = _json.loads(r.recommendations_json)
+        except Exception:
+            recs = []
+    return CultureReportOut(
+        enps=r.enps, participation=r.participation, pulses_note=r.pulses_note,
+        dimensions=dims, recommendations=recs,
+    )
+
+
+@router.get("/culture-report/data", response_model=CultureReportOut)
+def get_culture_report(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Qualquer utilizador da empresa consulta o relatório de cultura."""
+    r = (
+        db.query(CultureReport)
+        .filter(CultureReport.company_id == current_user.company_id)
+        .first()
+    )
+    return _report_to_out(r)
+
+
+@router.put("/culture-report/data", response_model=CultureReportOut)
+def put_culture_report(
+    payload: CultureReportIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+):
+    """O Capital Humano/Administração edita o relatório de cultura da empresa."""
+    r = (
+        db.query(CultureReport)
+        .filter(CultureReport.company_id == current_user.company_id)
+        .first()
+    )
+    if r is None:
+        r = CultureReport(company_id=current_user.company_id)
+        db.add(r)
+
+    r.enps = payload.enps
+    r.participation = payload.participation
+    r.pulses_note = payload.pulses_note
+    r.dimensions_json = _json.dumps([d.model_dump() for d in payload.dimensions])
+    r.recommendations_json = _json.dumps(payload.recommendations)
+
+    db.commit()
+    db.refresh(r)
+    return _report_to_out(r)
