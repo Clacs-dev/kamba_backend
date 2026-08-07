@@ -100,6 +100,34 @@ def create_evaluation(
     db.refresh(ev)
     return ev
 
+@router.get("", response_model=list[EvaluationOut])
+def list_evaluations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    cycle_id: int | None = None,
+):
+    """
+    Lista as avaliações relevantes para o utilizador, conforme o perfil:
+    - Capital Humano e Administração veem todas as da empresa.
+    - Comissão vê todas (para decidir recursos).
+    - Director vê as avaliações em que é o avaliador.
+    - Colaborador vê apenas as suas.
+    Opcionalmente filtra por cycle_id.
+    """
+    query = db.query(Evaluation).filter(Evaluation.company_id == current_user.company_id)
+
+    if cycle_id is not None:
+        query = query.filter(Evaluation.cycle_id == cycle_id)
+
+    role = current_user.role
+    if role in (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.COMISSAO_AVALIACAO):
+        pass  # veem todas
+    elif role == UserRole.DIRECTOR:
+        query = query.filter(Evaluation.director_id == current_user.id)
+    else:
+        query = query.filter(Evaluation.collaborator_id == current_user.id)
+
+    return query.order_by(Evaluation.id.desc()).all()
 
 @router.get("/{evaluation_id}", response_model=EvaluationOut)
 def get_evaluation(
