@@ -72,6 +72,22 @@ def open_process(
     db.refresh(p)
     return p
 
+@router.get("", response_model=list[ProcessOut])
+def list_processes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Lista os processos disciplinares:
+    - Instrutores (CH, Administração, Comissão) veem todos os da empresa.
+    - O arguido vê apenas os seus.
+    """
+    query = db.query(DisciplinaryProcess).filter(
+        DisciplinaryProcess.company_id == current_user.company_id
+    )
+    if current_user.role not in INSTRUCTOR_ROLES:
+        query = query.filter(DisciplinaryProcess.accused_id == current_user.id)
+    return query.order_by(DisciplinaryProcess.id.desc()).all()
 
 @router.get("/{process_id}", response_model=ProcessOut)
 def get_process(
