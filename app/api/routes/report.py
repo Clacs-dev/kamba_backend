@@ -108,3 +108,34 @@ def consolidated_report(
         by_department=by_department,
         by_category=by_category,
     )
+
+
+# ---------- PDF do relatório consolidado ----------
+
+from fastapi import Response
+from app.models.company import Company
+from app.services.report_pdf import gerar_pdf_relatorio
+
+
+@router.get("/evaluations/{cycle_id}/pdf")
+def consolidated_report_pdf(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Gera e devolve o relatório consolidado do ciclo em PDF (secção 3.3).
+    """
+    report = consolidated_report(cycle_id, db, current_user)
+
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    company_name = company.name if company else "Empresa"
+
+    pdf_bytes = gerar_pdf_relatorio(report, company_name)
+
+    filename = f"relatorio_{report.cycle_name}.pdf".replace(" ", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
