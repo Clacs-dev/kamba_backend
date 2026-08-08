@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from app.models.enums import DocumentType, SignatureType
 
 
+# --- Documentos ---
+
 class DocumentCreate(BaseModel):
     title: str = Field(..., min_length=2, max_length=200)
     doc_type: DocumentType = DocumentType.OUTRO
@@ -21,6 +23,7 @@ class DocumentUpdate(BaseModel):
 
 
 class DocumentSummary(BaseModel):
+    """Documento na listagem — sem o texto integral (mais leve)."""
     id: int
     title: str
     doc_type: DocumentType
@@ -30,6 +33,7 @@ class DocumentSummary(BaseModel):
 
 
 class DocumentDetail(BaseModel):
+    """Documento com o texto integral — devolvido ao abrir para ler."""
     id: int
     company_id: int
     title: str
@@ -46,6 +50,8 @@ class DocumentReadReceipt(BaseModel):
     read_at: datetime
     model_config = {"from_attributes": True}
 
+
+# --- Assinaturas ---
 
 class SignatureCreate(BaseModel):
     signature_type: SignatureType

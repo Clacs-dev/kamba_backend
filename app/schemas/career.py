@@ -28,6 +28,11 @@ class CareerEventOut(BaseModel):
 
 
 class TimelineItem(BaseModel):
+    """
+    Um item da linha do tempo agregada. 'source' diz de onde veio o evento
+    (manual, admissao, avaliacao, disciplina, exame...), para o frontend
+    poder mostrar ícones/cores diferentes.
+    """
     date: date
     source: str
     category: str

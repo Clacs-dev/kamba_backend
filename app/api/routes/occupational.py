@@ -1,5 +1,11 @@
 """
 Rotas de Saúde Ocupacional (secção 2.7).
+
+- CH regista exames (só aptidão e datas).
+- O colaborador consulta a sua própria aptidão.
+- Rota de alertas: exames com próximo exame já vencido (em atraso).
+
+Isolamento por company_id.
 """
 from datetime import date
 
@@ -52,6 +58,7 @@ def list_collaborator_exams(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """O CH consulta o histórico de exames de um colaborador."""
     collab = (
         db.query(User)
         .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
@@ -72,6 +79,7 @@ def my_exams(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """O colaborador consulta a sua própria aptidão (só aptidão e datas)."""
     return (
         db.query(OccupationalExam)
         .filter(OccupationalExam.collaborator_id == current_user.id)
@@ -85,8 +93,13 @@ def overdue_exams(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """
+    Alertas automáticos de exames em atraso (secção 2.7): colaboradores cujo
+    próximo exame previsto já passou. Considera-se o exame mais recente de cada um.
+    """
     today = date.today()
 
+    # Exames com próximo exame já vencido.
     exams = (
         db.query(OccupationalExam)
         .filter(
@@ -97,6 +110,7 @@ def overdue_exams(
         .all()
     )
 
+    # Ficar só com o exame mais recente por colaborador.
     latest_by_collab: dict[int, OccupationalExam] = {}
     for e in exams:
         cur = latest_by_collab.get(e.collaborator_id)

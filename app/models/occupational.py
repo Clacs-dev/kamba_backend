@@ -1,8 +1,13 @@
 """
 Modelo de Saúde Ocupacional (secção 2.7).
 
-PRIVACIDADE POR DESENHO: regista APENAS a aptidão laboral e as datas.
-Não existe qualquer campo para diagnóstico ou dados clínicos.
+PRIVACIDADE POR DESENHO — o ponto central deste módulo:
+O modelo regista APENAS a aptidão laboral e as datas. NÃO existe qualquer
+campo para diagnóstico, sintomas ou dados clínicos — esses permanecem na
+esfera do médico do trabalho, fora da plataforma. Esta ausência é
+intencional e estrutural.
+
+Isolamento por company_id.
 """
 from datetime import datetime, date, timezone
 
@@ -28,9 +33,12 @@ class OccupationalExam(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
 
+    # Só aptidão e datas — nunca diagnósticos.
     fitness: Mapped[FitnessResult] = mapped_column(Enum(FitnessResult), nullable=False)
-    exam_date: Mapped[date] = mapped_column(Date, nullable=False)
-    next_exam_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    exam_date: Mapped[date] = mapped_column(Date, nullable=False)          # data do exame
+    next_exam_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # próximo exame previsto
+
+    # Uma nota opcional NÃO clínica (ex.: "restrição a trabalho noturno").
     restriction_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

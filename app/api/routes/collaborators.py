@@ -3,6 +3,12 @@ Rotas de gestão de colaboradores.
 
 REGRA DE OURO (multi-tenant): todas as consultas filtram por
 current_user.company_id — que vem do token, não de um parâmetro do cliente.
+Um utilizador só vê e altera colaboradores da SUA empresa. Nunca se confia
+num company_id enviado pelo cliente.
+
+Permissões: criar, editar e desativar são reservados a Capital Humano e
+Administração. Listar e ver são permitidos a esses mesmos perfis (os
+colaboradores comuns têm o seu próprio portal, tratado noutro módulo).
 """
 import secrets
 
@@ -23,10 +29,16 @@ from app.api.deps import require_roles
 
 router = APIRouter(prefix="/collaborators", tags=["collaborators"])
 
+# Perfis com poder de gestão de pessoas.
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
 
 def _get_company_user_or_404(db: Session, company_id: int, user_id: int) -> User:
+    """
+    Procura um utilizador pelo id MAS restrito à empresa indicada.
+    Se não existir nessa empresa, devolve 404 — nunca revela que o id existe
+    noutra empresa. Isto é parte do isolamento multi-tenant.
+    """
     user = (
         db.query(User)
         .filter(User.id == user_id, User.company_id == company_id)
@@ -46,8 +58,13 @@ def create_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """
+    Cria um colaborador na empresa do utilizador autenticado.
+    Gera uma password temporária, devolvida uma única vez.
+    """
     company_id = current_user.company_id
 
+    # Email único dentro da empresa.
     exists = (
         db.query(User)
         .filter(User.company_id == company_id, User.email == payload.email)
@@ -59,7 +76,7 @@ def create_collaborator(
             detail="Já existe um colaborador com este email nesta empresa.",
         )
 
-    temp_password = secrets.token_urlsafe(9)
+    temp_password = secrets.token_urlsafe(9)  # ~12 caracteres legíveis
 
     collaborator = User(
         company_id=company_id,
@@ -86,6 +103,7 @@ def list_collaborators(
     is_active: bool | None = Query(default=None, description="Filtrar por estado"),
     search: str | None = Query(default=None, description="Procurar por nome ou email"),
 ):
+    """Lista os colaboradores da empresa do utilizador, com filtros opcionais."""
     query = db.query(User).filter(User.company_id == current_user.company_id)
 
     if role is not None:
@@ -107,6 +125,7 @@ def get_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """Devolve um colaborador específico da empresa do utilizador."""
     return _get_company_user_or_404(db, current_user.company_id, collaborator_id)
 
 
@@ -117,6 +136,7 @@ def update_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """Atualiza os dados de um colaborador da empresa do utilizador."""
     collaborator = _get_company_user_or_404(
         db, current_user.company_id, collaborator_id
     )
@@ -136,6 +156,10 @@ def deactivate_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """
+    Desativa um colaborador (não apaga — num sistema com histórico legal,
+    desativa-se, preservando o registo). Impede desativar a própria conta.
+    """
     if collaborator_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -156,6 +180,7 @@ def reactivate_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """Reativa um colaborador previamente desativado."""
     collaborator = _get_company_user_or_404(
         db, current_user.company_id, collaborator_id
     )

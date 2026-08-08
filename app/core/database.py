@@ -11,21 +11,15 @@ from app.core.config import settings
 
 # O argumento connect_args só é necessário para SQLite (permite usar a mesma
 # ligação em várias threads do servidor). Ao migrar para Postgres, é ignorado.
-# O Render fornece a ligação Postgres como "postgres://", mas o SQLAlchemy
-# moderno exige "postgresql://". Corrige automaticamente. No local (SQLite),
-# esta linha não tem efeito nenhum.
-_db_url = settings.DATABASE_URL
-if _db_url.startswith("postgres://"):
-    _db_url = _db_url.replace("postgres://", "postgresql://", 1)
-
-_is_sqlite = _db_url.startswith("sqlite")
+_is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 _connect_args = {"check_same_thread": False} if _is_sqlite else {}
 
 engine = create_engine(
-    _db_url,
+    settings.DATABASE_URL,
     connect_args=_connect_args,
-    echo=False,
+    echo=False,  # coloca True para ver o SQL gerado durante o desenvolvimento
 )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Base declarativa de onde todos os modelos herdam.

@@ -1,5 +1,13 @@
 """
 Rotas da ficha do colaborador (secção 2.1).
+
+- O Capital Humano / Administração vê e atualiza a ficha de qualquer
+  colaborador da sua empresa.
+- O próprio colaborador consulta a sua ficha (mas não a edita — pode requerer
+  correções por outra via, a implementar depois).
+
+Isolamento multi-tenant: a ficha é sempre procurada dentro da empresa do
+utilizador autenticado.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -17,6 +25,7 @@ MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
 
 def _get_or_create_profile(db: Session, user: User) -> EmployeeProfile:
+    """Devolve a ficha do utilizador, criando-a vazia se ainda não existir."""
     profile = (
         db.query(EmployeeProfile)
         .filter(EmployeeProfile.user_id == user.id)
@@ -35,6 +44,7 @@ def get_my_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """O colaborador consulta a sua própria ficha."""
     return _get_or_create_profile(db, current_user)
 
 
@@ -44,13 +54,17 @@ def get_collaborator_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """O Capital Humano vê a ficha de um colaborador da sua empresa."""
     collaborator = (
         db.query(User)
         .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
         .first()
     )
     if collaborator is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Colaborador não encontrado.",
+        )
     return _get_or_create_profile(db, collaborator)
 
 
@@ -61,16 +75,21 @@ def update_collaborator_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """O Capital Humano atualiza a ficha de um colaborador da sua empresa."""
     collaborator = (
         db.query(User)
         .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
         .first()
     )
     if collaborator is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Colaborador não encontrado.",
+        )
 
     profile = _get_or_create_profile(db, collaborator)
 
+    # Validação: número de colaborador único na empresa.
     data = payload.model_dump(exclude_unset=True)
     new_number = data.get("employee_number")
     if new_number:
@@ -84,7 +103,10 @@ def update_collaborator_profile(
             .first()
         )
         if clash:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Já existe um colaborador com este número nesta empresa.")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Já existe um colaborador com este número nesta empresa.",
+            )
 
     for field, value in data.items():
         setattr(profile, field, value)

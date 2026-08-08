@@ -1,5 +1,13 @@
 """
 Rotas do dossier: documentos (2.4) e assinaturas (2.2).
+
+Permissões:
+- Capital Humano / Administração: criam e editam documentos da empresa.
+- Qualquer colaborador autenticado: lista e lê os documentos da SUA empresa;
+  cada leitura fica registada (prova jurídica).
+- Cada colaborador assina as suas próprias adesões.
+
+Isolamento multi-tenant: tudo filtrado por company_id do utilizador.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -18,6 +26,8 @@ router = APIRouter(tags=["dossier"])
 
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
+
+# ---------- Documentos: gestão (CH) ----------
 
 @router.post("/documents", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
 def create_document(
@@ -58,11 +68,14 @@ def update_document(
     return doc
 
 
+# ---------- Documentos: consulta e leitura (todos) ----------
+
 @router.get("/documents", response_model=list[DocumentSummary])
 def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Lista os documentos ativos da empresa (sem o texto integral)."""
     return (
         db.query(Document)
         .filter(Document.company_id == current_user.company_id, Document.is_active == True)  # noqa: E712
@@ -77,6 +90,11 @@ def read_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Abre um documento para leitura e REGISTA a leitura do colaborador.
+    O registo é a prova de que a empresa comunicou a norma (secção 2.4).
+    A primeira leitura fica com carimbo; releituras não duplicam o registo.
+    """
     doc = (
         db.query(Document)
         .filter(Document.id == document_id, Document.company_id == current_user.company_id)
@@ -107,6 +125,7 @@ def list_document_reads(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """O CH vê quem já leu um documento (prova de comunicação)."""
     doc = (
         db.query(Document)
         .filter(Document.id == document_id, Document.company_id == current_user.company_id)
@@ -122,12 +141,15 @@ def list_document_reads(
     )
 
 
+# ---------- Assinaturas (2.2) ----------
+
 @router.post("/me/signatures", response_model=SignatureOut, status_code=status.HTTP_201_CREATED)
 def sign(
     payload: SignatureCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """O colaborador regista uma das três assinaturas de adesão."""
     existing = (
         db.query(Signature)
         .filter(
@@ -155,6 +177,7 @@ def my_signatures(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """O colaborador vê as assinaturas que já registou."""
     return (
         db.query(Signature)
         .filter(Signature.user_id == current_user.id)

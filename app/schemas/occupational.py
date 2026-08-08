@@ -29,6 +29,7 @@ class ExamOut(BaseModel):
 
 
 class OverdueExam(BaseModel):
+    """Alerta de exame em atraso (secção 2.7)."""
     collaborator_id: int
     collaborator_name: str
     last_exam_date: date

@@ -1,5 +1,12 @@
 """
 Modelo do processo disciplinar (secção 4).
+
+Percorre seis fases obrigatórias. Cada campo corresponde a um ato processual
+que só pode ser preenchido na fase certa. A plataforma não permite averbar
+medida sem o processo ter percorrido todas as fases — é esta rigidez que
+protege o trabalhador (direito de defesa) e a empresa (perante impugnação).
+
+Isolamento por company_id.
 """
 from datetime import datetime, date, timezone
 
@@ -22,6 +29,7 @@ class DisciplinaryProcess(Base):
         ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False
     )
 
+    # Arguido (o trabalhador visado) e instrutor (quem conduz o processo).
     accused_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -29,27 +37,32 @@ class DisciplinaryProcess(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
-    reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    reference: Mapped[str] = mapped_column(String(100), nullable=False)  # referência do processo
     phase: Mapped[DisciplinaryPhase] = mapped_column(
         Enum(DisciplinaryPhase), default=DisciplinaryPhase.INSTAURACAO, nullable=False
     )
 
-    imputed_facts: Mapped[str] = mapped_column(Text, nullable=False)
-    disciplinary_record: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Fase 1 — Instauração
+    imputed_facts: Mapped[str] = mapped_column(Text, nullable=False)         # factos imputados
+    disciplinary_record: Mapped[str | None] = mapped_column(Text, nullable=True)  # antecedentes
 
-    charge_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Fase 2 — Nota de culpa
+    charge_note: Mapped[str | None] = mapped_column(Text, nullable=True)     # nota de culpa (factos + qualificação)
     preventive_suspension: Mapped[bool] = mapped_column(Boolean, default=False)
-    charge_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    charge_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # assinatura de conhecimento
 
+    # Fase 3 — Defesa
     defense_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     defense_deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
     defense_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Fase 4 — Decisão
     decision_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome: Mapped[DisciplinaryOutcome] = mapped_column(
         Enum(DisciplinaryOutcome), default=DisciplinaryOutcome.PENDENTE, nullable=False
     )
 
+    # Fase 5 — Tomada de conhecimento da decisão
     decision_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

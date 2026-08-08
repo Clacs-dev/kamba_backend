@@ -1,6 +1,19 @@
 """
 Rotas do ciclo de avaliação (secção 3) — a máquina de seis fases.
+
+Fluxo (3.1):
+  1. AUTOAVALIACAO      -> colaborador preenche e submete
+  2. AVALIACAO_DIRECTOR -> director avalia e submete (calcula pontuação)
+  3. CONCORDANCIA       -> colaborador aceita (->FECHADA) ou recorre (->COMISSAO)
+  4. COMISSAO           -> comissão decide (->FECHADA)
+  5. FECHADA            -> consolidada
+  6. VALIDADA           -> administração valida
+
+Cada transição exige a fase correta E o perfil correto. A plataforma não
+deixa saltar fases. Tudo isolado por company_id.
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -15,6 +28,7 @@ from app.schemas.evaluation import (
 from app.api.deps import get_current_user, require_roles
 from app.services.evaluation_scoring import compute_score
 from app.services.notifications import notify
+from app.services.audit import audit
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
 
@@ -39,6 +53,8 @@ def _require_phase(ev: Evaluation, expected: EvaluationPhase):
             detail=f"Ação inválida nesta fase. A avaliação está em '{ev.phase.value}', esperava-se '{expected.value}'.",
         )
 
+
+# ---------- Ciclos (CH gere) ----------
 
 @router.post("/cycles", response_model=CycleOut, status_code=status.HTTP_201_CREATED)
 def create_cycle(
@@ -66,6 +82,8 @@ def list_cycles(
     )
 
 
+# ---------- Criar avaliação (CH) ----------
+
 @router.post("", response_model=EvaluationOut, status_code=status.HTTP_201_CREATED)
 def create_evaluation(
     payload: EvaluationCreate,
@@ -74,6 +92,7 @@ def create_evaluation(
 ):
     company_id = current_user.company_id
 
+    # Validar que ciclo, colaborador e director pertencem à empresa.
     cycle = (
         db.query(EvaluationCycle)
         .filter(EvaluationCycle.id == payload.cycle_id, EvaluationCycle.company_id == company_id)
@@ -99,6 +118,7 @@ def create_evaluation(
     db.commit()
     db.refresh(ev)
     return ev
+
 
 @router.get("", response_model=list[EvaluationOut])
 def list_evaluations(
@@ -129,6 +149,7 @@ def list_evaluations(
 
     return query.order_by(Evaluation.id.desc()).all()
 
+
 @router.get("/{evaluation_id}", response_model=EvaluationOut)
 def get_evaluation(
     evaluation_id: int,
@@ -137,6 +158,8 @@ def get_evaluation(
 ):
     return _get_eval_or_404(db, current_user.company_id, evaluation_id)
 
+
+# ---------- Fase 1: Autoavaliação (colaborador) ----------
 
 @router.post("/{evaluation_id}/self-assessment", response_model=EvaluationOut)
 def submit_self_assessment(
@@ -151,19 +174,19 @@ def submit_self_assessment(
         raise HTTPException(status_code=403, detail="Só o próprio colaborador pode submeter a autoavaliação.")
 
     ev.self_answers = answers.model_dump_json()
-    ev.phase = EvaluationPhase.AVALIACAO_DIRECTOR
-
+    ev.phase = EvaluationPhase.AVALIACAO_DIRECTOR  # -> notifica Director (fase 2)
     notify(
         db, company_id=ev.company_id, user_id=ev.director_id,
         title="Autoavaliação submetida",
         message="Um colaborador submeteu a autoavaliação. Já pode avaliar.",
         category="avaliacao", link=f"/evaluations/{ev.id}",
     )
-
     db.commit()
     db.refresh(ev)
     return ev
 
+
+# ---------- Fase 2: Avaliação do Director ----------
 
 @router.post("/{evaluation_id}/director-assessment", response_model=EvaluationOut)
 def submit_director_assessment(
@@ -177,14 +200,14 @@ def submit_director_assessment(
     if ev.director_id != current_user.id:
         raise HTTPException(status_code=403, detail="Só o director designado pode avaliar.")
 
+    # Calcula a pontuação a partir das respostas do director.
     data = answers.model_dump()
     score, classification = compute_score(data, ev.category)
 
     ev.director_answers = answers.model_dump_json()
     ev.final_score = score
     ev.classification = classification
-    ev.phase = EvaluationPhase.CONCORDANCIA
-
+    ev.phase = EvaluationPhase.CONCORDANCIA  # -> notifica colaborador (fase 3)
     notify(
         db, company_id=ev.company_id, user_id=ev.collaborator_id,
         title="Avaliação disponível",
@@ -195,6 +218,8 @@ def submit_director_assessment(
     db.refresh(ev)
     return ev
 
+
+# ---------- Fase 3: Concordância (colaborador aceita ou recorre) ----------
 
 @router.post("/{evaluation_id}/accept", response_model=EvaluationOut)
 def accept_evaluation(
@@ -207,7 +232,7 @@ def accept_evaluation(
     if ev.collaborator_id != current_user.id:
         raise HTTPException(status_code=403, detail="Só o próprio colaborador pode aceitar.")
 
-    ev.phase = EvaluationPhase.FECHADA
+    ev.phase = EvaluationPhase.FECHADA  # aceite -> consolidada (fase 5)
     db.commit()
     db.refresh(ev)
     return ev
@@ -226,24 +251,26 @@ def appeal_evaluation(
         raise HTTPException(status_code=403, detail="Só o próprio colaborador pode recorrer.")
 
     ev.appeal_reason = payload.reason
-    ev.phase = EvaluationPhase.COMISSAO
-
-    comissao = (
+    ev.phase = EvaluationPhase.COMISSAO  # recurso -> comissão (fase 4)
+    # Notifica todos os membros da Comissão de Avaliação da empresa.
+    membros = (
         db.query(User)
         .filter(User.company_id == ev.company_id, User.role == UserRole.COMISSAO_AVALIACAO)
         .all()
     )
-    for membro in comissao:
+    for m in membros:
         notify(
-            db, company_id=ev.company_id, user_id=membro.id,
-            title="Recurso de avaliação",
-            message="Foi submetido um recurso de avaliação para decisão da comissão.",
+            db, company_id=ev.company_id, user_id=m.id,
+            title="Novo recurso de avaliação",
+            message="Um colaborador recorreu de uma avaliação. A comissão tem 8 dias úteis para decidir.",
             category="avaliacao", link=f"/evaluations/{ev.id}",
         )
     db.commit()
     db.refresh(ev)
     return ev
 
+
+# ---------- Fase 4: Comissão decide o recurso ----------
 
 @router.post("/{evaluation_id}/commission-decision", response_model=EvaluationOut)
 def commission_decision(
@@ -256,23 +283,21 @@ def commission_decision(
     _require_phase(ev, EvaluationPhase.COMISSAO)
 
     ev.commission_decision = payload.decision
-    ev.phase = EvaluationPhase.FECHADA
-    notify(
-        db, company_id=ev.company_id, user_id=ev.collaborator_id,
-        title="Decisão da comissão",
-        message="A comissão decidiu sobre o seu recurso.",
-        category="avaliacao", link=f"/evaluations/{ev.id}",
-    )
-    notify(
-        db, company_id=ev.company_id, user_id=ev.director_id,
-        title="Decisão da comissão",
-        message="A comissão decidiu sobre um recurso de uma avaliação da sua equipa.",
-        category="avaliacao", link=f"/evaluations/{ev.id}",
-    )
+    ev.phase = EvaluationPhase.FECHADA  # decidido -> consolidada (fase 5)
+    # O manual: a decisão é notificada ao colaborador E ao director.
+    for uid in (ev.collaborator_id, ev.director_id):
+        notify(
+            db, company_id=ev.company_id, user_id=uid,
+            title="Decisão do recurso",
+            message="A Comissão de Avaliação decidiu o recurso. A avaliação está consolidada.",
+            category="avaliacao", link=f"/evaluations/{ev.id}",
+        )
     db.commit()
     db.refresh(ev)
     return ev
 
+
+# ---------- Fase 6: Administração valida ----------
 
 @router.post("/{evaluation_id}/validate", response_model=EvaluationOut)
 def validate_evaluation(
@@ -283,7 +308,9 @@ def validate_evaluation(
     ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
     _require_phase(ev, EvaluationPhase.FECHADA)
 
-    ev.phase = EvaluationPhase.VALIDADA
+    ev.phase = EvaluationPhase.VALIDADA  # valida -> desencadeia relatório (3.3, futuro)
+    audit(db, actor=current_user, action="avaliacao.validada",
+          detail=f"Avaliação #{ev.id} validada.")
     db.commit()
     db.refresh(ev)
     return ev

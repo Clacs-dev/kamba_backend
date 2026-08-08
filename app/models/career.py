@@ -1,7 +1,12 @@
 """
 Modelo de eventos manuais do percurso (secção 2.3).
-Guarda só os marcos que NÃO vêm de outros módulos (louvores, nomeações,
-promoções). O resto é agregado na hora, na rota do percurso.
+
+Guarda apenas os marcos que NÃO vêm automaticamente de outros módulos —
+louvores, nomeações, promoções. Os restantes eventos (admissão, avaliações,
+disciplina, exames, formações) são agregados na hora, na rota do percurso,
+a partir dos módulos respetivos.
+
+Isolamento por company_id.
 """
 from datetime import datetime, date, timezone
 

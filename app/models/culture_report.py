@@ -1,5 +1,13 @@
 """
-Modelo do relatório de cultura — dados editados pelo Capital Humano.
+Modelo do "relatório de cultura" — dados de cultura editados pelo Capital Humano.
+
+O manual descreve o painel de cultura com dimensões (evolução por ano), eNPS e
+participação. Estes indicadores consolidados são inseridos/editados pelo Capital
+Humano da empresa (não são calculados automaticamente pelos pulses, que servem
+para a recolha anónima corrente). Guardamos um registo por empresa.
+
+Os dados flexíveis (dimensões por ano, série de eNPS) ficam em JSON, para o CH
+poder estruturar como precisar. Isolamento por company_id.
 """
 from datetime import datetime, timezone
 
@@ -21,10 +29,14 @@ class CultureReport(Base):
         ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False, unique=True
     )
 
+    # Indicadores gerais (texto livre curto, ex.: "+34", "79%").
     enps: Mapped[str | None] = mapped_column(String(50), nullable=True)
     participation: Mapped[str | None] = mapped_column(String(50), nullable=True)
     pulses_note: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
+    # Dados estruturados em JSON (guardados como texto):
+    # dimensions: [{"name": "...", "y2023": 58, "y2024": 66, "y2025": 71}, ...]
+    # recommendations: ["...", "...", "..."]
     dimensions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommendations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 

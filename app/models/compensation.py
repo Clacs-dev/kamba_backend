@@ -1,5 +1,13 @@
 """
 Modelos de Remuneração e Assiduidade (secção 2.8).
+
+- SalaryRecord: um registo de progressão salarial (com o ano, o salário e o
+  enquadramento na tabela). O histórico de registos mostra a progressão.
+- AttendanceRecord: indicadores de assiduidade por período (presenças, faltas
+  justificadas e injustificadas, férias gozadas).
+
+Visibilidade (aplicada nas rotas): próprio, Capital Humano e Administração.
+Isolamento por company_id.
 """
 from datetime import datetime, timezone
 
@@ -14,6 +22,7 @@ def _now() -> datetime:
 
 
 class SalaryRecord(Base):
+    """Um registo de progressão salarial (por ano)."""
     __tablename__ = "salary_records"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
@@ -25,13 +34,14 @@ class SalaryRecord(Base):
     )
 
     year: Mapped[int] = mapped_column(Integer, nullable=False)
-    gross_salary: Mapped[float] = mapped_column(Float, nullable=False)
-    salary_grade: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gross_salary: Mapped[float] = mapped_column(Float, nullable=False)     # salário bruto
+    salary_grade: Mapped[str | None] = mapped_column(String(100), nullable=True)  # enquadramento na tabela
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class AttendanceRecord(Base):
+    """Indicadores de assiduidade de um período (ex.: um ano)."""
     __tablename__ = "attendance_records"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
@@ -42,7 +52,7 @@ class AttendanceRecord(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
 
-    period: Mapped[str] = mapped_column(String(50), nullable=False)
+    period: Mapped[str] = mapped_column(String(50), nullable=False)  # ex.: "2025" ou "2025-Q1"
     present_days: Mapped[int] = mapped_column(Integer, default=0)
     justified_absences: Mapped[int] = mapped_column(Integer, default=0)
     unjustified_absences: Mapped[int] = mapped_column(Integer, default=0)

@@ -1,7 +1,18 @@
 """
 Rotas do Percurso / linha do tempo (secção 2.3).
-Agrega numa só linha do tempo: eventos manuais + admissão + avaliações
-validadas + processos disciplinares arquivados + exames + formações.
+
+- CH regista eventos manuais (louvores, nomeações, promoções).
+- A rota de timeline AGREGA numa só linha do tempo, ordenada por data:
+    * eventos manuais (career_events)
+    * admissão (da ficha do colaborador)
+    * avaliações validadas (module evaluation)
+    * processos disciplinares arquivados (module disciplinary)
+    * exames de saúde ocupacional
+    * formações (ações de formação)
+
+Visibilidade: o próprio vê o seu percurso; CH e Administração veem o de
+qualquer colaborador da empresa.
+Isolamento por company_id.
 """
 from datetime import date
 
@@ -28,6 +39,8 @@ MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 def _can_view(current_user: User, collaborator_id: int) -> bool:
     return current_user.id == collaborator_id or current_user.role in MANAGE_ROLES
 
+
+# ---------- Eventos manuais ----------
 
 @router.post("/events", response_model=CareerEventOut, status_code=status.HTTP_201_CREATED)
 def add_event(
@@ -57,6 +70,8 @@ def add_event(
     return ev
 
 
+# ---------- Linha do tempo agregada ----------
+
 @router.get("/collaborators/{collaborator_id}/timeline", response_model=list[TimelineItem])
 def timeline(
     collaborator_id: int,
@@ -77,6 +92,7 @@ def timeline(
 
     items: list[TimelineItem] = []
 
+    # 1. Eventos manuais
     for e in db.query(CareerEvent).filter(
         CareerEvent.company_id == company_id,
         CareerEvent.collaborator_id == collaborator_id,
@@ -86,6 +102,7 @@ def timeline(
             title=e.title, detail=e.description,
         ))
 
+    # 2. Admissão (da ficha)
     profile = db.query(EmployeeProfile).filter(
         EmployeeProfile.user_id == collaborator_id
     ).first()
@@ -95,6 +112,7 @@ def timeline(
             title="Admissão", detail=None,
         ))
 
+    # 3. Avaliações validadas
     for ev in db.query(Evaluation).filter(
         Evaluation.company_id == company_id,
         Evaluation.collaborator_id == collaborator_id,
@@ -106,6 +124,7 @@ def timeline(
             detail=f"Pontuação: {ev.final_score}" if ev.final_score is not None else None,
         ))
 
+    # 4. Processos disciplinares arquivados
     for p in db.query(DisciplinaryProcess).filter(
         DisciplinaryProcess.company_id == company_id,
         DisciplinaryProcess.accused_id == collaborator_id,
@@ -117,6 +136,7 @@ def timeline(
             detail=f"Resultado: {p.outcome.value}",
         ))
 
+    # 5. Exames de saúde ocupacional
     for ex in db.query(OccupationalExam).filter(
         OccupationalExam.company_id == company_id,
         OccupationalExam.collaborator_id == collaborator_id,
@@ -126,6 +146,7 @@ def timeline(
             title=f"Exame de medicina no trabalho — {ex.fitness.value}", detail=None,
         ))
 
+    # 6. Formações
     for ta in db.query(TrainingAction).filter(
         TrainingAction.company_id == company_id,
         TrainingAction.collaborator_id == collaborator_id,
@@ -135,6 +156,7 @@ def timeline(
             title=f"Formação: {ta.title}", detail=ta.description,
         ))
 
+    # Ordenar por data, mais recente primeiro.
     items.sort(key=lambda i: i.date, reverse=True)
     return items
 
@@ -144,4 +166,5 @@ def my_timeline(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Atalho: o próprio consulta o seu percurso."""
     return timeline(current_user.id, db, current_user)

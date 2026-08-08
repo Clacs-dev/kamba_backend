@@ -1,7 +1,14 @@
 """
 Rotas dos Relatórios consolidados da avaliação (secção 3.3).
-Agrega as avaliações validadas de um ciclo: geral, por direção, por categoria.
+
+Concluída a validação pela Administração, estes relatórios agregam as
+avaliações VALIDADAS de um ciclo em três vistas:
+  - geral do ciclo
+  - por direção (department da ficha do colaborador)
+  - por categoria profissional (technico / dirigente)
+
 Reservado a Administração e Capital Humano.
+Isolamento por company_id.
 """
 from collections import defaultdict
 
@@ -23,6 +30,7 @@ SCORE_THRESHOLD = 3.5
 
 
 def _stats_from(scores: list[float], classifications: list[str]) -> tuple[float | None, dict, int]:
+    """Calcula média, distribuição por classificação e nº abaixo do limiar."""
     if not scores:
         return None, {}, 0
     avg = round(sum(scores) / len(scores), 2)
@@ -50,6 +58,7 @@ def consolidated_report(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
 
+    # Todas as avaliações validadas do ciclo.
     evals = (
         db.query(Evaluation)
         .filter(
@@ -61,10 +70,12 @@ def consolidated_report(
         .all()
     )
 
+    # --- Geral ---
     all_scores = [e.final_score for e in evals]
     all_class = [e.classification for e in evals]
     overall_avg, overall_by_class, _ = _stats_from(all_scores, all_class)
 
+    # --- Por categoria ---
     cat_scores: dict[str, list[float]] = defaultdict(list)
     cat_class: dict[str, list[str]] = defaultdict(list)
     for e in evals:
@@ -79,6 +90,7 @@ def consolidated_report(
             by_classification=by_class, below_threshold=below,
         ))
 
+    # --- Por direção (department da ficha) ---
     dep_scores: dict[str, list[float]] = defaultdict(list)
     dep_class: dict[str, list[str]] = defaultdict(list)
     for e in evals:
@@ -124,8 +136,10 @@ def consolidated_report_pdf(
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
     """
-    Gera e devolve o relatório consolidado do ciclo em PDF (secção 3.3).
+    Gera e devolve o relatório consolidado do ciclo em PDF, para arquivo e
+    apresentação à Administração / Assembleia Geral (secção 3.3).
     """
+    # Reutiliza a mesma lógica de consolidação da rota de dados.
     report = consolidated_report(cycle_id, db, current_user)
 
     company = db.query(Company).filter(Company.id == current_user.company_id).first()

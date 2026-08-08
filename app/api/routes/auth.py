@@ -84,11 +84,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     )
     return TokenResponse(access_token=token)
 
+
 @router.post("/token", response_model=TokenResponse, include_in_schema=False)
 def login_form(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
+    """
+    Login compatível com o formulário OAuth2 do Swagger (botão Authorize).
+    O campo 'username' recebe o email. Serve apenas para testar no /docs;
+    o frontend usa a rota /login com JSON.
+    """
     user = db.query(User).filter(User.email == form_data.username).first()
     if user is None or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -99,6 +105,7 @@ def login_form(
         subject=user.id, company_id=user.company_id, role=user.role.value
     )
     return TokenResponse(access_token=token)
+
 
 @router.get("/me", response_model=UserOut)
 def me(

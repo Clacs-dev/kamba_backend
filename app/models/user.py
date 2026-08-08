@@ -50,10 +50,13 @@ class User(Base):
 
     # Relação inversa para a empresa.
     company: Mapped["Company"] = relationship(back_populates="users")
+
+    # Ficha profissional (um-para-um). uselist=False torna a relação singular.
     profile: Mapped["EmployeeProfile"] = relationship(
         back_populates="user",
         uselist=False,
         cascade="all, delete-orphan",
     )
+
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r} role={self.role.value}>"

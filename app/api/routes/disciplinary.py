@@ -1,5 +1,17 @@
 """
 Rotas do processo disciplinar (secção 4) — a segunda máquina de seis fases.
+
+Fluxo (4.1):
+  1. INSTAURACAO           -> instrutor abre (factos, antecedentes)
+  2. NOTA_CULPA            -> instrutor emite nota de culpa; arguido assina conhecimento
+  3. DEFESA                -> arguido submete defesa escrita
+  4. DECISAO               -> instrutor emite decisão (medida ou arquivamento)
+  5. CONHECIMENTO_DECISAO  -> arguido assina conhecimento da decisão
+  6. ARQUIVADO             -> processo encerrado e averbado
+
+Regra do manual: não se pode saltar fases; nenhuma medida é averbada sem o
+processo percorrer todas as fases. Instrução compete ao Capital Humano.
+Isolamento por company_id.
 """
 from datetime import datetime, timezone
 
@@ -15,6 +27,7 @@ from app.schemas.disciplinary import (
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
+from app.services.audit import audit
 
 router = APIRouter(prefix="/disciplinary", tags=["disciplinary"])
 
@@ -44,6 +57,8 @@ def _require_phase(p: DisciplinaryProcess, expected: DisciplinaryPhase):
         )
 
 
+# ---------- Fase 1: Instauração (instrutor) ----------
+
 @router.post("", response_model=ProcessOut, status_code=status.HTTP_201_CREATED)
 def open_process(
     payload: ProcessCreate,
@@ -72,6 +87,7 @@ def open_process(
     db.refresh(p)
     return p
 
+
 @router.get("", response_model=list[ProcessOut])
 def list_processes(
     db: Session = Depends(get_db),
@@ -89,6 +105,7 @@ def list_processes(
         query = query.filter(DisciplinaryProcess.accused_id == current_user.id)
     return query.order_by(DisciplinaryProcess.id.desc()).all()
 
+
 @router.get("/{process_id}", response_model=ProcessOut)
 def get_process(
     process_id: int,
@@ -96,10 +113,13 @@ def get_process(
     current_user: User = Depends(get_current_user),
 ):
     p = _get_or_404(db, current_user.company_id, process_id)
+    # O arguido pode ver o seu processo; os instrutores veem os da empresa.
     if current_user.role not in INSTRUCTOR_ROLES and p.accused_id != current_user.id:
         raise HTTPException(status_code=403, detail="Sem acesso a este processo.")
     return p
 
+
+# ---------- Fase 2: Nota de culpa (instrutor emite) ----------
 
 @router.post("/{process_id}/charge-note", response_model=ProcessOut)
 def issue_charge_note(
@@ -113,18 +133,19 @@ def issue_charge_note(
 
     p.charge_note = payload.charge_note
     p.preventive_suspension = payload.preventive_suspension
-    p.phase = DisciplinaryPhase.NOTA_CULPA
+    p.phase = DisciplinaryPhase.NOTA_CULPA  # notificada -> aguarda conhecimento do arguido
     notify(
         db, company_id=p.company_id, user_id=p.accused_id,
         title="Nota de culpa",
         message="Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
         category="disciplina", link=f"/disciplinary/{p.id}",
     )
-
     db.commit()
     db.refresh(p)
     return p
 
+
+# ---------- Fase 2->3: Arguido assina conhecimento da nota de culpa ----------
 
 @router.post("/{process_id}/acknowledge-charge", response_model=ProcessOut)
 def acknowledge_charge(
@@ -138,11 +159,13 @@ def acknowledge_charge(
         raise HTTPException(status_code=403, detail="Só o arguido pode assinar a tomada de conhecimento.")
 
     p.charge_ack_at = _now()
-    p.phase = DisciplinaryPhase.DEFESA
+    p.phase = DisciplinaryPhase.DEFESA  # -> pode apresentar defesa
     db.commit()
     db.refresh(p)
     return p
 
+
+# ---------- Fase 3: Defesa (arguido submete) ----------
 
 @router.post("/{process_id}/defense", response_model=ProcessOut)
 def submit_defense(
@@ -158,11 +181,13 @@ def submit_defense(
 
     p.defense_text = payload.defense_text
     p.defense_submitted_at = _now()
-    p.phase = DisciplinaryPhase.DECISAO
+    p.phase = DisciplinaryPhase.DECISAO  # -> aguarda decisão do instrutor
     db.commit()
     db.refresh(p)
     return p
 
+
+# ---------- Fase 4: Decisão (instrutor emite) ----------
 
 @router.post("/{process_id}/decision", response_model=ProcessOut)
 def issue_decision(
@@ -176,17 +201,21 @@ def issue_decision(
 
     p.decision_text = payload.decision_text
     p.outcome = payload.outcome
-    p.phase = DisciplinaryPhase.CONHECIMENTO_DECISAO
+    p.phase = DisciplinaryPhase.CONHECIMENTO_DECISAO  # -> aguarda conhecimento do arguido
     notify(
         db, company_id=p.company_id, user_id=p.accused_id,
         title="Decisão disciplinar",
         message="Foi emitida a decisão do seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
         category="disciplina", link=f"/disciplinary/{p.id}",
     )
+    audit(db, actor=current_user, action="disciplina.decisao",
+          detail=f"Decisão emitida no processo {p.reference}.")
     db.commit()
     db.refresh(p)
     return p
 
+
+# ---------- Fase 5->6: Arguido assina conhecimento da decisão -> arquiva ----------
 
 @router.post("/{process_id}/acknowledge-decision", response_model=ProcessOut)
 def acknowledge_decision(
@@ -200,11 +229,13 @@ def acknowledge_decision(
         raise HTTPException(status_code=403, detail="Só o arguido pode assinar o conhecimento da decisão.")
 
     p.decision_ack_at = _now()
-    p.phase = DisciplinaryPhase.ARQUIVADO
+    p.phase = DisciplinaryPhase.ARQUIVADO  # encerrado e averbado
     db.commit()
     db.refresh(p)
     return p
 
+
+# ---------- Consultas ----------
 
 @router.get("/collaborator/{accused_id}", response_model=list[ProcessOut])
 def list_processes_of_collaborator(
@@ -212,6 +243,7 @@ def list_processes_of_collaborator(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
 ):
+    """O instrutor consulta o cadastro disciplinar de um colaborador."""
     return (
         db.query(DisciplinaryProcess)
         .filter(

@@ -1,6 +1,12 @@
 """
 Rota do Dashboard (métricas agregadas da empresa).
-Reservado a Capital Humano e Administração. Usa contagens na base de dados.
+
+Reservado a Capital Humano e Administração. Usa contagens na base de dados
+(func.count) em vez de trazer os registos para memória — mantém-se rápido
+mesmo com muitos dados.
+
+Todas as contagens são filtradas por company_id: o painel reflete apenas a
+empresa do utilizador autenticado.
 """
 from datetime import date
 
@@ -34,6 +40,7 @@ def summary(
 ):
     cid = current_user.company_id
 
+    # --- Colaboradores ---
     total_collabs = db.query(func.count(User.id)).filter(User.company_id == cid).scalar() or 0
     active_collabs = db.query(func.count(User.id)).filter(
         User.company_id == cid, User.is_active == True  # noqa: E712
@@ -53,10 +60,12 @@ def summary(
         by_role=by_role,
     )
 
+    # --- Avaliações ---
     total_evals = db.query(func.count(Evaluation.id)).filter(Evaluation.company_id == cid).scalar() or 0
     validated = db.query(func.count(Evaluation.id)).filter(
         Evaluation.company_id == cid, Evaluation.phase == EvaluationPhase.VALIDADA
     ).scalar() or 0
+    # Em curso = nem validada nem fechada.
     in_progress_evals = db.query(func.count(Evaluation.id)).filter(
         Evaluation.company_id == cid,
         Evaluation.phase.notin_([EvaluationPhase.VALIDADA, EvaluationPhase.FECHADA]),
@@ -83,6 +92,7 @@ def summary(
         by_classification=by_classification,
     )
 
+    # --- Disciplina ---
     total_disc = db.query(func.count(DisciplinaryProcess.id)).filter(
         DisciplinaryProcess.company_id == cid
     ).scalar() or 0
@@ -97,10 +107,12 @@ def summary(
         archived=archived,
     )
 
+    # --- Formação ---
     plans = db.query(func.count(TrainingPlan.id)).filter(TrainingPlan.company_id == cid).scalar() or 0
     actions = db.query(func.count(TrainingAction.id)).filter(TrainingAction.company_id == cid).scalar() or 0
     training = TrainingMetrics(plans=plans, actions=actions)
 
+    # --- Saúde ocupacional ---
     exams = db.query(func.count(OccupationalExam.id)).filter(
         OccupationalExam.company_id == cid
     ).scalar() or 0

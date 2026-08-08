@@ -1,5 +1,9 @@
 """
 Geração de PDF do relatório consolidado da avaliação (secção 3.3).
+
+Produz um PDF profissional a partir dos dados já consolidados, para a
+Administração e a Assembleia Geral (como o manual descreve). Devolve os
+bytes do PDF, para a rota os enviar como ficheiro.
 """
 from io import BytesIO
 from datetime import date
@@ -12,12 +16,17 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
 )
 
+# Cor institucional (o verde-azulado do KAMBA).
 PRI = colors.HexColor("#356A75")
 LINE = colors.HexColor("#E3E9E6")
 DIM = colors.HexColor("#7C8B92")
 
 
 def gerar_pdf_relatorio(report, company_name: str) -> bytes:
+    """
+    Recebe o objeto ConsolidatedReport (com os campos já calculados) e o nome
+    da empresa, e devolve os bytes de um PDF.
+    """
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -34,12 +43,15 @@ def gerar_pdf_relatorio(report, company_name: str) -> bytes:
     normal = styles["Normal"]
 
     story = []
+
+    # Cabeçalho
     story.append(Paragraph("KAMBA · RELATÓRIO CONSOLIDADO DE AVALIAÇÃO", eyebrow))
     story.append(Paragraph(f"{report.cycle_name}", h1))
     story.append(Paragraph(f"Empresa: {company_name}", normal))
     story.append(Paragraph(f"Gerado em {date.today().strftime('%d/%m/%Y')}", normal))
     story.append(Spacer(1, 6))
 
+    # Resumo geral
     story.append(Paragraph("Resumo geral do ciclo", h2))
     media = report.overall_average if report.overall_average is not None else "—"
     resumo_data = [
@@ -52,6 +64,7 @@ def gerar_pdf_relatorio(report, company_name: str) -> bytes:
     t.setStyle(_estilo_tabela())
     story.append(t)
 
+    # Por direção
     story.append(Paragraph("Consolidação por direção", h2))
     if report.by_department:
         dep_data = [["Direção", "Avaliações", "Média", "Abaixo de 3,5"]]
@@ -67,6 +80,7 @@ def gerar_pdf_relatorio(report, company_name: str) -> bytes:
     else:
         story.append(Paragraph("Sem dados por direção.", normal))
 
+    # Por categoria
     story.append(Paragraph("Consolidação por categoria", h2))
     if report.by_category:
         cat_data = [["Categoria", "Avaliações", "Média"]]

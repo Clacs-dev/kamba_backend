@@ -40,6 +40,7 @@ class ActionOut(BaseModel):
 
 
 class TrainingNeed(BaseModel):
+    """Necessidade detetada automaticamente pelo sistema (nota < 3,5)."""
     collaborator_id: int
     collaborator_name: str
     last_score: float

@@ -1,6 +1,13 @@
 """
 Serviço de notificações — função única para criar avisos.
-Adiciona à sessão mas NÃO faz commit: quem chama faz o commit no fim.
+
+Os módulos (avaliação, disciplina, formação...) chamam notify(...) nos
+momentos-chave. Centralizar aqui evita repetir código e mantém o formato
+consistente.
+
+Nota: esta função adiciona a notificação à sessão mas NÃO faz commit — quem
+chama já está numa transação e faz o commit no fim. Isto garante que a
+notificação só existe se a ação principal também for gravada.
 """
 from sqlalchemy.orm import Session
 

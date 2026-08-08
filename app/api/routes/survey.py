@@ -1,5 +1,13 @@
 """
 Rotas da cultura organizacional (secção 6) — inquéritos-pulso anónimos.
+
+Garantias de anonimato:
+1. A resposta é gravada sem user_id (tabela SurveyResponse).
+2. A participação é gravada à parte (tabela SurveyParticipation), só para
+   impedir dupla resposta. As duas nunca se cruzam.
+3. Os resultados só são revelados com >= 5 respostas.
+
+Isolamento por company_id.
 """
 import json
 
@@ -18,7 +26,7 @@ from app.api.deps import get_current_user, require_roles
 router = APIRouter(prefix="/surveys", tags=["culture"])
 
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
-MIN_RESPONSES = 5
+MIN_RESPONSES = 5  # limiar de anonimato (secção 6)
 
 
 def _get_survey_or_404(db: Session, company_id: int, survey_id: int) -> Survey:
@@ -77,10 +85,15 @@ def respond(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Submete uma resposta anónima. Regista a participação (para impedir dupla
+    resposta) e a resposta (sem ligação ao utilizador), em separado.
+    """
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
     if survey.status != SurveyStatus.ABERTO:
         raise HTTPException(status_code=409, detail="Este inquérito está fechado.")
 
+    # Já participou?
     already = (
         db.query(SurveyParticipation)
         .filter(
@@ -92,6 +105,7 @@ def respond(
     if already:
         raise HTTPException(status_code=409, detail="Já respondeu a este inquérito.")
 
+    # Validar dimensões e escala.
     valid_dims = set(json.loads(survey.dimensions))
     for dim, val in payload.answers.items():
         if dim not in valid_dims:
@@ -99,6 +113,7 @@ def respond(
         if not (1 <= val <= 5):
             raise HTTPException(status_code=422, detail="As respostas devem estar entre 1 e 5.")
 
+    # Gravar participação e resposta SEPARADAMENTE.
     db.add(SurveyParticipation(
         company_id=current_user.company_id, survey_id=survey.id, user_id=current_user.id
     ))
@@ -129,6 +144,9 @@ def get_results(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
+    """
+    Resultados agregados. Só revelados com >= 5 respostas (anonimato).
+    """
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
 
     responses = (
@@ -147,6 +165,7 @@ def get_results(
             note=f"Resultados ocultados: são necessárias pelo menos {MIN_RESPONSES} respostas para proteger o anonimato.",
         )
 
+    # Agregar médias por dimensão.
     dims = json.loads(survey.dimensions)
     totals = {d: 0 for d in dims}
     counts = {d: 0 for d in dims}

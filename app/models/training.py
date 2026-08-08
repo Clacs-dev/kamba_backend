@@ -1,5 +1,11 @@
 """
 Modelos do plano de formação (secção 5).
+
+- TrainingPlan: o plano de um período/ciclo, que a Administração aprova.
+- TrainingAction: cada ação de formação dentro do plano, com a sua origem
+  (sistema ou área), o colaborador visado e o estado.
+
+Isolamento por company_id.
 """
 from datetime import datetime, timezone
 
@@ -21,7 +27,7 @@ class TrainingPlan(Base):
     company_id: Mapped[int] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)  # ex.: "Plano 2025"
     status: Mapped[TrainingPlanStatus] = mapped_column(
         Enum(TrainingPlanStatus), default=TrainingPlanStatus.RASCUNHO, nullable=False
     )
@@ -41,7 +47,8 @@ class TrainingAction(Base):
     collaborator_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    title: Mapped[str] = mapped_column(String(200), nullable=False)      # ação formativa proposta
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[TrainingSource] = mapped_column(
         Enum(TrainingSource), default=TrainingSource.AREA, nullable=False

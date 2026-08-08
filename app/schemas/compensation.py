@@ -5,6 +5,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+# --- Remuneração ---
+
 class SalaryCreate(BaseModel):
     collaborator_id: int
     year: int = Field(..., ge=1990, le=2100)
@@ -22,6 +24,8 @@ class SalaryOut(BaseModel):
     created_at: datetime
     model_config = {"from_attributes": True}
 
+
+# --- Assiduidade ---
 
 class AttendanceCreate(BaseModel):
     collaborator_id: int

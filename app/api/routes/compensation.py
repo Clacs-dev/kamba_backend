@@ -1,6 +1,11 @@
 """
 Rotas de Remuneração e Assiduidade (secção 2.8).
-Visibilidade: próprio, Capital Humano e Administração.
+
+Visibilidade (regra do manual): os dados de um colaborador são visíveis ao
+próprio, ao Capital Humano e à Administração — mais ninguém. A escrita
+(registar salário/assiduidade) é só do CH e da Administração.
+
+Isolamento por company_id.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -20,6 +25,7 @@ MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
 
 def _can_view(current_user: User, collaborator_id: int) -> bool:
+    """Próprio, Capital Humano ou Administração."""
     if current_user.id == collaborator_id:
         return True
     return current_user.role in MANAGE_ROLES
@@ -35,6 +41,8 @@ def _collab_in_company_or_404(db: Session, company_id: int, collaborator_id: int
         raise HTTPException(status_code=404, detail="Colaborador não encontrado nesta empresa.")
     return collab
 
+
+# ---------- Remuneração ----------
 
 @router.post("/salary", response_model=SalaryOut, status_code=status.HTTP_201_CREATED)
 def add_salary(
@@ -62,6 +70,7 @@ def list_salary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Progressão salarial. Visível ao próprio, CH e Administração."""
     if not _can_view(current_user, collaborator_id):
         raise HTTPException(status_code=403, detail="Sem acesso a estes dados.")
     _collab_in_company_or_404(db, current_user.company_id, collaborator_id)
@@ -75,6 +84,8 @@ def list_salary(
         .all()
     )
 
+
+# ---------- Assiduidade ----------
 
 @router.post("/attendance", response_model=AttendanceOut, status_code=status.HTTP_201_CREATED)
 def add_attendance(
@@ -104,6 +115,7 @@ def list_attendance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Indicadores de assiduidade. Visível ao próprio, CH e Administração."""
     if not _can_view(current_user, collaborator_id):
         raise HTTPException(status_code=403, detail="Sem acesso a estes dados.")
     _collab_in_company_or_404(db, current_user.company_id, collaborator_id)
@@ -117,6 +129,8 @@ def list_attendance(
         .all()
     )
 
+
+# ---------- Atalhos "os meus dados" ----------
 
 @router.get("/me/salary", response_model=list[SalaryOut])
 def my_salary(
