@@ -29,8 +29,20 @@ from app.api.deps import get_current_user, require_roles
 from app.services.evaluation_scoring import compute_score
 from app.services.notifications import notify
 from app.services.audit import audit
+from datetime import datetime, timezone, timedelta
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
+
+
+def _add_business_days(start: datetime, days: int) -> datetime:
+    """Soma 'days' dias úteis (seg-sex) a uma data, ignorando fins de semana."""
+    d = start
+    added = 0
+    while added < days:
+        d = d + timedelta(days=1)
+        if d.weekday() < 5:  # 0-4 = segunda a sexta
+            added += 1
+    return d
 
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
@@ -252,6 +264,7 @@ def appeal_evaluation(
 
     ev.appeal_reason = payload.reason
     ev.phase = EvaluationPhase.COMISSAO  # recurso -> comissão (fase 4)
+    ev.appeal_deadline = _add_business_days(datetime.now(timezone.utc), 8)  # prazo legal (3.1)
     # Notifica todos os membros da Comissão de Avaliação da empresa.
     membros = (
         db.query(User)
@@ -314,3 +327,49 @@ def validate_evaluation(
     db.commit()
     db.refresh(ev)
     return ev
+
+
+# ---------- Histórico de notas (para o gráfico da Ficha, secção 2.1) ----------
+
+from pydantic import BaseModel as _BaseModel
+
+
+class ScoreHistoryItem(_BaseModel):
+    cycle_id: int
+    cycle_name: str
+    final_score: float | None
+    classification: str | None
+
+
+@router.get("/me/score-history", response_model=list[ScoreHistoryItem])
+def my_score_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 3,
+):
+    """
+    Histórico das notas validadas do próprio colaborador, dos últimos ciclos
+    (por defeito 3), para a evolução gráfica na Ficha.
+    """
+    rows = (
+        db.query(Evaluation, EvaluationCycle)
+        .join(EvaluationCycle, Evaluation.cycle_id == EvaluationCycle.id)
+        .filter(
+            Evaluation.company_id == current_user.company_id,
+            Evaluation.collaborator_id == current_user.id,
+            Evaluation.phase == EvaluationPhase.VALIDADA,
+        )
+        .order_by(EvaluationCycle.id.desc())
+        .limit(limit)
+        .all()
+    )
+    # Devolve do mais antigo ao mais recente (melhor para gráfico).
+    result = [
+        ScoreHistoryItem(
+            cycle_id=cyc.id, cycle_name=cyc.name,
+            final_score=ev.final_score, classification=ev.classification,
+        )
+        for ev, cyc in rows
+    ]
+    result.reverse()
+    return result

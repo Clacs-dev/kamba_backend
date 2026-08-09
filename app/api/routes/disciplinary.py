@@ -253,3 +253,36 @@ def list_processes_of_collaborator(
         .order_by(DisciplinaryProcess.created_at.desc())
         .all()
     )
+
+
+# ---------- PDF da peça disciplinar ----------
+
+from fastapi import Response
+from app.models.company import Company
+from app.services.report_pdf import gerar_pdf_peca_disciplinar
+
+
+@router.get("/{process_id}/pdf")
+def disciplinary_pdf(
+    process_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Gera o PDF da peça disciplinar (factos, nota de culpa, decisão)."""
+    p = _get_or_404(db, current_user.company_id, process_id)
+    # Instrutores e o próprio arguido podem descarregar.
+    if current_user.role not in INSTRUCTOR_ROLES and p.accused_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Sem acesso a este processo.")
+
+    accused = db.query(User).filter(User.id == p.accused_id).first()
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    pdf_bytes = gerar_pdf_peca_disciplinar(
+        p,
+        accused_name=accused.full_name if accused else f"#{p.accused_id}",
+        company_name=company.name if company else "Empresa",
+    )
+    filename = f"processo_{p.reference}.pdf".replace(" ", "_").replace("/", "-")
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

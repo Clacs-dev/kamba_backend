@@ -74,6 +74,7 @@ class Evaluation(Base):
 
     # Recurso (fase 3->4).
     appeal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    appeal_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     commission_decision: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -68,6 +68,7 @@ class EvaluationOut(BaseModel):
     final_score: float | None
     classification: str | None
     appeal_reason: str | None
+    appeal_deadline: datetime | None = None
     commission_decision: str | None
     created_at: datetime
     updated_at: datetime

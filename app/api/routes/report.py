@@ -11,6 +11,7 @@ Reservado a Administração e Capital Humano.
 Isolamento por company_id.
 """
 from collections import defaultdict
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -152,4 +153,90 @@ def consolidated_report_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------- Cruzamento cultura × desempenho por direção (secção 6) ----------
+
+from app.models.evaluation import EvaluationCycle as _Cycle
+
+
+class CultureVsPerformanceRow(BaseModel):
+    department: str
+    performance_average: float | None
+    below_threshold: int
+    headcount: int
+
+
+class CultureVsPerformanceOut(BaseModel):
+    cycle_id: int
+    cycle_name: str
+    company_enps: str | None
+    company_participation: str | None
+    rows: list["CultureVsPerformanceRow"]
+
+
+@router.get("/culture-vs-performance/{cycle_id}", response_model=CultureVsPerformanceOut)
+def culture_vs_performance(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Cruza o desempenho por direção (médias das avaliações validadas) com os
+    indicadores de cultura da empresa — leitura de governação (secção 6):
+    onde é que o clima pode estar a travar os resultados.
+    """
+    cycle = (
+        db.query(_Cycle)
+        .filter(_Cycle.id == cycle_id, _Cycle.company_id == current_user.company_id)
+        .first()
+    )
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+
+    evals = (
+        db.query(Evaluation)
+        .filter(
+            Evaluation.company_id == current_user.company_id,
+            Evaluation.cycle_id == cycle_id,
+            Evaluation.phase == EvaluationPhase.VALIDADA,
+        )
+        .all()
+    )
+
+    # Agrupa desempenho por direção.
+    por_dir: dict[str, list[float]] = defaultdict(list)
+    for e in evals:
+        prof = (
+            db.query(EmployeeProfile)
+            .filter(EmployeeProfile.user_id == e.collaborator_id)
+            .first()
+        )
+        dep = (prof.department if prof and prof.department else "Sem direção")
+        if e.final_score is not None:
+            por_dir[dep].append(e.final_score)
+
+    rows = []
+    for dep, scores in sorted(por_dir.items()):
+        avg = round(sum(scores) / len(scores), 2) if scores else None
+        below = sum(1 for s in scores if s < SCORE_THRESHOLD)
+        rows.append(CultureVsPerformanceRow(
+            department=dep, performance_average=avg,
+            below_threshold=below, headcount=len(scores),
+        ))
+
+    # Indicadores de cultura da empresa (do relatório editável, se existir).
+    from app.models.culture_report import CultureReport
+    cr = (
+        db.query(CultureReport)
+        .filter(CultureReport.company_id == current_user.company_id)
+        .first()
+    )
+
+    return CultureVsPerformanceOut(
+        cycle_id=cycle.id, cycle_name=cycle.name,
+        company_enps=cr.enps if cr else None,
+        company_participation=cr.participation if cr else None,
+        rows=rows,
     )

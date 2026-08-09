@@ -121,3 +121,53 @@ def _estilo_tabela(cabecalho: bool = False) -> TableStyle:
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ]
     return TableStyle(estilos)
+
+
+def gerar_pdf_peca_disciplinar(processo, accused_name: str, company_name: str) -> bytes:
+    """
+    Gera o PDF de uma peça disciplinar (nota de culpa e/ou decisão), para a
+    prova documental que o manual valoriza no procedimento disciplinar.
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=2 * cm, bottomMargin=2 * cm, leftMargin=2 * cm, rightMargin=2 * cm,
+        title=f"Processo Disciplinar {processo.reference}",
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Title"], textColor=PRI, fontSize=18, spaceAfter=4)
+    eyebrow = ParagraphStyle("eyebrow", parent=styles["Normal"], textColor=DIM, fontSize=8, spaceAfter=2)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=PRI, fontSize=12, spaceBefore=12)
+    normal = styles["Normal"]
+
+    story = []
+    story.append(Paragraph("KAMBA · PROCESSO DISCIPLINAR", eyebrow))
+    story.append(Paragraph(f"Processo {processo.reference}", h1))
+    story.append(Paragraph(f"Empresa: {company_name}", normal))
+    story.append(Paragraph(f"Arguido: {accused_name}", normal))
+    story.append(Paragraph(f"Gerado em {date.today().strftime('%d/%m/%Y')}", normal))
+    story.append(Spacer(1, 6))
+
+    story.append(Paragraph("Factos imputados", h2))
+    story.append(Paragraph(processo.imputed_facts or "—", normal))
+
+    if processo.charge_note:
+        story.append(Paragraph("Nota de culpa", h2))
+        story.append(Paragraph(processo.charge_note, normal))
+
+    if processo.decision_text:
+        story.append(Paragraph("Decisão", h2))
+        outcome = processo.outcome.value if hasattr(processo.outcome, "value") else str(processo.outcome)
+        story.append(Paragraph(f"Medida: {outcome}", normal))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(processo.decision_text, normal))
+
+    story.append(Spacer(1, 20))
+    rodape = ParagraphStyle("rodape", parent=normal, textColor=DIM, fontSize=8)
+    story.append(Paragraph(
+        "Documento gerado pela plataforma KAMBA. Peça do procedimento disciplinar, "
+        "para efeitos de prova documental.", rodape))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
