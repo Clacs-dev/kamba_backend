@@ -129,6 +129,14 @@ def create_evaluation(
     db.add(ev)
     db.commit()
     db.refresh(ev)
+    # Notifica o colaborador de que tem uma autoavaliação pendente.
+    notify(
+        db, company_id=ev.company_id, user_id=ev.collaborator_id,
+        title="Autoavaliação disponível",
+        message="Foi iniciada a sua avaliação de desempenho. Preencha a sua autoavaliação.",
+        category="avaliacao", link=f"/evaluations/{ev.id}",
+    )
+    db.commit()
     return ev
 
 
