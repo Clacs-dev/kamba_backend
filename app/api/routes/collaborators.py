@@ -84,6 +84,7 @@ def create_collaborator(
         hashed_password=hash_password(temp_password),
         full_name=payload.full_name,
         role=payload.role,
+        must_change_password=True,  # obriga a trocar no primeiro acesso
     )
     db.add(collaborator)
     db.commit()

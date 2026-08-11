@@ -122,5 +122,37 @@ def me(
         full_name=current_user.full_name,
         role=current_user.role,
         is_active=current_user.is_active,
+        must_change_password=current_user.must_change_password,
         created_at=current_user.created_at,
     )
+
+
+# ---------- Troca de password ----------
+
+from pydantic import BaseModel, Field as _Field
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = _Field(..., min_length=8, max_length=128)
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Troca a password do próprio utilizador. Verifica a password atual e
+    limpa a marca 'must_change_password'.
+    """
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="A password atual está incorreta.")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="A nova password deve ser diferente da atual.")
+
+    current_user.hashed_password = hash_password(payload.new_password)
+    current_user.must_change_password = False
+    db.commit()
+    return {"detail": "Password alterada com sucesso."}
