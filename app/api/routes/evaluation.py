@@ -220,9 +220,17 @@ def submit_director_assessment(
     if ev.director_id != current_user.id:
         raise HTTPException(status_code=403, detail="Só o director designado pode avaliar.")
 
-    # Calcula a pontuação a partir das respostas do director.
+    # Calcula a pontuação a partir das respostas do director,
+    # usando as ponderações configuradas pela empresa (secção 8).
     data = answers.model_dump()
-    score, classification = compute_score(data, ev.category)
+    from app.api.routes.evaluation_settings import get_or_create_settings
+    from app.models.enums import EvaluationCategory
+    cfg = get_or_create_settings(db, current_user.company_id)
+    if ev.category == EvaluationCategory.DIRIGENTE:
+        pesos = {"objectives": cfg.dir_objectives, "competencies": cfg.dir_competencies, "values": cfg.dir_values}
+    else:
+        pesos = {"objectives": cfg.tec_objectives, "competencies": cfg.tec_competencies, "values": cfg.tec_values}
+    score, classification = compute_score(data, ev.category, weights=pesos)
 
     ev.director_answers = answers.model_dump_json()
     ev.final_score = score
@@ -272,7 +280,9 @@ def appeal_evaluation(
 
     ev.appeal_reason = payload.reason
     ev.phase = EvaluationPhase.COMISSAO  # recurso -> comissão (fase 4)
-    ev.appeal_deadline = _add_business_days(datetime.now(timezone.utc), 8)  # prazo legal (3.1)
+    from app.api.routes.evaluation_settings import get_or_create_settings
+    cfg = get_or_create_settings(db, current_user.company_id)
+    ev.appeal_deadline = _add_business_days(datetime.now(timezone.utc), cfg.appeal_deadline_days)  # prazo configurável (secção 8)
     # Notifica todos os membros da Comissão de Avaliação da empresa.
     membros = (
         db.query(User)

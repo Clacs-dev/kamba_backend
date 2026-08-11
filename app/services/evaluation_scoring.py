@@ -82,16 +82,18 @@ def classify(score: float) -> str:
     return "Excelente"
 
 
-def compute_score(answers: dict, category: EvaluationCategory) -> tuple[float, str]:
+def compute_score(answers: dict, category: EvaluationCategory, weights: dict | None = None) -> tuple[float, str]:
     """
     answers = {
       "objectives": [{"weight":.., "execution":..}, ...],
       "competencies": {chave: 1-5, ...},
       "values": {chave: bool, ...}
     }
+    weights (opcional): {"objectives":.., "competencies":.., "values":..} — se
+    não for passado, usa as ponderações do manual para a categoria.
     Devolve (pontuacao_final_0a5, classificacao).
     """
-    w = WEIGHTS[category]
+    w = weights if weights is not None else WEIGHTS[category]
     s_obj = _score_objectives(answers.get("objectives", []))
     s_comp = _score_competencies(answers.get("competencies", {}))
     s_val = _score_values(answers.get("values", {}))
