@@ -47,6 +47,12 @@ class CollaboratorCreatedOut(BaseModel):
     """
     Resposta ao criar um colaborador: inclui a password temporária gerada.
     Esta é a ÚNICA vez que a password aparece — não é recuperável depois.
+    Expõe também o id (e campos) na raiz, para compatibilidade com o frontend
+    que espera resp.data.id diretamente.
     """
+    id: int
+    full_name: str
+    email: str
+    role: str
     collaborator: CollaboratorOut
     temporary_password: str

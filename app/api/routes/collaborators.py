@@ -91,6 +91,10 @@ def create_collaborator(
     db.refresh(collaborator)
 
     return CollaboratorCreatedOut(
+        id=collaborator.id,
+        full_name=collaborator.full_name,
+        email=collaborator.email,
+        role=collaborator.role.value if hasattr(collaborator.role, "value") else str(collaborator.role),
         collaborator=CollaboratorOut.model_validate(collaborator),
         temporary_password=temp_password,
     )
