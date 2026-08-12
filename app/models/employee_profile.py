@@ -46,8 +46,11 @@ class EmployeeProfile(Base):
         Enum(ContractType), nullable=True
     )
     job_category: Mapped[str | None] = mapped_column(String(150), nullable=True)  # categoria profissional
+    job_title: Mapped[str | None] = mapped_column(String(150), nullable=True)     # cargo específico (ex.: Chefe de Vendas)
     department: Mapped[str | None] = mapped_column(String(150), nullable=True)    # direção / área
     workplace: Mapped[str | None] = mapped_column(String(150), nullable=True)     # local de trabalho
+    work_schedule: Mapped[str | None] = mapped_column(String(200), nullable=True) # horário (ex.: 2.ª a 6.ª · 08h00-16h30)
+    situation_tags: Mapped[str | None] = mapped_column(String(300), nullable=True) # etiquetas livres, separadas por vírgula
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

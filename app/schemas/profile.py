@@ -16,8 +16,11 @@ class ProfileUpdate(BaseModel):
     admission_date: date | None = None
     contract_type: ContractType | None = None
     job_category: str | None = Field(default=None, max_length=150)
+    job_title: str | None = Field(default=None, max_length=150)
     department: str | None = Field(default=None, max_length=150)
     workplace: str | None = Field(default=None, max_length=150)
+    work_schedule: str | None = Field(default=None, max_length=200)
+    situation_tags: str | None = Field(default=None, max_length=300)
 
 
 class ProfileOut(BaseModel):
@@ -28,8 +31,12 @@ class ProfileOut(BaseModel):
     admission_date: date | None
     contract_type: ContractType | None
     job_category: str | None
+    job_title: str | None
     department: str | None
     workplace: str | None
+    work_schedule: str | None
+    situation_tags: str | None
+    policies_signature_pending: bool = False  # calculado: assinaturas em falta
     updated_at: datetime
 
     model_config = {"from_attributes": True}

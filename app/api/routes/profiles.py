@@ -39,13 +39,32 @@ def _get_or_create_profile(db: Session, user: User) -> EmployeeProfile:
     return profile
 
 
+def _profile_out(db: Session, profile: EmployeeProfile) -> ProfileOut:
+    """Monta o ProfileOut acrescentando a tag calculada de assinaturas pendentes."""
+    from app.models.dossier import Signature
+    from app.models.enums import SignatureType
+    assinadas = {
+        s.signature_type for s in
+        db.query(Signature).filter(Signature.user_id == profile.user_id).all()
+    }
+    obrigatorias = {
+        SignatureType.REGULAMENTO_POLITICAS,
+        SignatureType.TERMOS_PORTAL,
+        SignatureType.CONSENTIMENTO_DADOS,
+    }
+    pendente = not obrigatorias.issubset(assinadas)
+    out = ProfileOut.model_validate(profile)
+    out.policies_signature_pending = pendente
+    return out
+
+
 @router.get("/me/profile", response_model=ProfileOut)
 def get_my_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """O colaborador consulta a sua própria ficha."""
-    return _get_or_create_profile(db, current_user)
+    return _profile_out(db, _get_or_create_profile(db, current_user))
 
 
 @router.get("/collaborators/{collaborator_id}/profile", response_model=ProfileOut)
@@ -65,7 +84,7 @@ def get_collaborator_profile(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Colaborador não encontrado.",
         )
-    return _get_or_create_profile(db, collaborator)
+    return _profile_out(db, _get_or_create_profile(db, collaborator))
 
 
 @router.put("/collaborators/{collaborator_id}/profile", response_model=ProfileOut)
