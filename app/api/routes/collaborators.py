@@ -280,3 +280,57 @@ def delete_collaborator_document(
     db.delete(d)
     db.commit()
     return {"detail": "Documento removido."}
+
+
+# ---------- Alterar o perfil (role) de um colaborador ----------
+
+from pydantic import BaseModel as _BaseModel
+
+
+class RoleUpdate(_BaseModel):
+    role: UserRole
+
+
+@router.patch("/{collaborator_id}/role", response_model=CollaboratorOut)
+def change_role(
+    collaborator_id: int,
+    payload: RoleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Altera o perfil (role) de um colaborador. Reservado a Capital Humano e
+    Administração. Não permite alterar o próprio perfil (evita despromoção
+    acidental do próprio gestor).
+    """
+    if collaborator_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Não pode alterar o seu próprio perfil.",
+        )
+    collaborator = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if collaborator is None:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+
+    collaborator.role = payload.role
+    db.commit()
+    db.refresh(collaborator)
+
+    # Notifica o colaborador da mudança de perfil.
+    try:
+        from app.services.notifications import notify
+        notify(
+            db, company_id=current_user.company_id, user_id=collaborator.id,
+            title="Perfil de acesso atualizado",
+            message=f"O seu perfil foi alterado para {payload.role.value}.",
+            category="conta", link="/",
+        )
+        db.commit()
+    except Exception:
+        pass
+
+    return CollaboratorOut.model_validate(collaborator)
