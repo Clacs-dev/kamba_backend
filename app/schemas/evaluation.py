@@ -69,6 +69,7 @@ class EvaluationOut(BaseModel):
     classification: str | None
     appeal_reason: str | None
     appeal_deadline: datetime | None = None
+    cycle_adjusted: bool = False
     commission_decision: str | None
     created_at: datetime
     updated_at: datetime

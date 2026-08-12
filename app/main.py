@@ -15,7 +15,7 @@ from app.api.routes import api_router
 
 # Importar os modelos garante que estão registados na Base ANTES de criar as
 # tabelas. (Em produção passaremos a usar migrações Alembic em vez disto.)
-from app.models import company, user, employee_profile, dossier, evaluation, disciplinary, training, survey, notification, occupational, compensation, career, culture_report, audit, onboarding, evaluation_settings  # noqa: F401
+from app.models import company, user, employee_profile, dossier, evaluation, disciplinary, training, survey, notification, occupational, compensation, career, culture_report, audit, onboarding, evaluation_settings, ficha_correction, leave  # noqa: F401
 
 # Cria as tabelas em SQLite se ainda não existirem.
 Base.metadata.create_all(bind=engine)

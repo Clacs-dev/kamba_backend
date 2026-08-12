@@ -125,3 +125,19 @@ class CareerEventType(str, enum.Enum):
     NOMEACAO = "nomeacao"          # nomeação para comissão de trabalho
     PROMOCAO = "promocao"
     OUTRO = "outro"
+
+
+class LeaveType(str, enum.Enum):
+    """Tipo de ausência (secção Férias & Ausências)."""
+    FERIAS = "ferias"
+    FALTA_JUSTIFICADA = "falta_justificada"
+    MATERNIDADE = "maternidade"
+    OUTRA = "outra"
+
+
+class LeaveStatus(str, enum.Enum):
+    """Estados do pedido de ausência ao longo do fluxo de aprovação."""
+    PENDENTE_DIRECTOR = "pendente_director"   # aguarda aprovação da chefia
+    PENDENTE_CH = "pendente_ch"               # aprovada pela chefia, aguarda averbamento do CH
+    APROVADA = "aprovada"                     # averbada pelo Capital Humano
+    RECUSADA = "recusada"                     # recusada (pela chefia ou pelo CH)

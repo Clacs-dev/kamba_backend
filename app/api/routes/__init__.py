@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     auth, collaborators, profiles, dossier, evaluation, disciplinary,
     training, survey, notification, occupational, compensation, career,
-    dashboard, report, audit, onboarding, evaluation_settings,
+    dashboard, report, audit, onboarding, evaluation_settings, ficha_correction, leave,
 )
 
 api_router = APIRouter()
@@ -27,3 +27,5 @@ api_router.include_router(report.router)
 api_router.include_router(audit.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(evaluation_settings.router)
+api_router.include_router(ficha_correction.router)
+api_router.include_router(leave.router)

@@ -118,6 +118,20 @@ def create_evaluation(
         if u is None:
             raise HTTPException(status_code=404, detail=f"{label} não encontrado nesta empresa.")
 
+    # Se o colaborador tem licença de maternidade aprovada, o ciclo é ajustado.
+    from app.models.leave import LeaveRequest
+    from app.models.enums import LeaveType, LeaveStatus
+    tem_maternidade = (
+        db.query(LeaveRequest)
+        .filter(
+            LeaveRequest.company_id == company_id,
+            LeaveRequest.collaborator_id == payload.collaborator_id,
+            LeaveRequest.leave_type == LeaveType.MATERNIDADE,
+            LeaveRequest.status == LeaveStatus.APROVADA,
+        )
+        .first()
+        is not None
+    )
     ev = Evaluation(
         company_id=company_id,
         cycle_id=payload.cycle_id,
@@ -125,6 +139,7 @@ def create_evaluation(
         director_id=payload.director_id,
         category=payload.category,
         phase=EvaluationPhase.AUTOAVALIACAO,
+        cycle_adjusted=tem_maternidade,
     )
     db.add(ev)
     db.commit()
