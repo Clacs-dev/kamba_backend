@@ -1,19 +1,20 @@
 """
-Rotas de Férias & Ausências.
+Rotas de Férias & Ausências — alinhadas ao contrato do frontend.
 
-Fluxo de aprovação:
-  colaborador cria -> PENDENTE_DIRECTOR
-  director aprova   -> PENDENTE_CH   (ou RECUSADA)
-  Capital Humano averba -> APROVADA  (ou RECUSADA)
-
-Saldo de férias: 22 dias por ano (secção do módulo). O saldo do ano em curso é
-22 menos os dias de férias já aprovados nesse ano.
-Cada transição notifica quem tem de agir a seguir (ou o colaborador na decisão).
+Endpoints:
+  GET  /leave/me/balance          -> saldo {direito, gozados, marcados, disponiveis}
+  GET  /leave/requests            -> lista filtrada por perfil
+  POST /leave/requests            -> criar (multipart, com documento opcional)
+  POST /leave/requests/{id}/approve   -> director aprova
+  POST /leave/requests/{id}/reject    -> director recusa (motivo)
+  POST /leave/maternity           -> CH regista maternidade (multipart)
+  POST /leave/requests/{id}/register  -> CH averba no mapa
+  GET  /leave/map?ano=            -> mapa anual (reservado)
 """
-from datetime import datetime, timezone, date
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -22,282 +23,60 @@ from app.models.enums import UserRole, LeaveType, LeaveStatus
 from app.models.leave import LeaveRequest
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
+from app.services.cloudinary_upload import upload_file
 
 router = APIRouter(prefix="/leave", tags=["leave"])
 
-ANNUAL_ALLOWANCE = 22  # dias de férias por ano
+ANNUAL = 22  # dias de férias por ano
 CH_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
 
-# ---------- Schemas ----------
-
-class LeaveIn(BaseModel):
-    leave_type: LeaveType
-    start_date: date
-    end_date: date
-    reason: str | None = Field(default=None, max_length=1000)
-    document_name: str | None = Field(default=None, max_length=255)
-    document_url: str | None = Field(default=None, max_length=500)
-
-    @model_validator(mode="after")
-    def _datas(self):
-        if self.end_date < self.start_date:
-            raise ValueError("A data de fim não pode ser anterior à data de início.")
-        return self
-
-
-class LeaveDecision(BaseModel):
-    note: str | None = Field(default=None, max_length=1000)
-
-
-class LeaveOut(BaseModel):
-    id: int
-    collaborator_id: int
-    leave_type: LeaveType
-    start_date: date
-    end_date: date
-    days: int
-    reason: str | None
-    document_name: str | None
-    document_url: str | None
-    status: LeaveStatus
-    decision_note: str | None
-    model_config = {"from_attributes": True}
-
-
-class BalanceOut(BaseModel):
-    year: int
-    allowance: int
-    used: int
-    remaining: int
-
-
-# ---------- Helpers ----------
-
 def _count_days(a: date, b: date) -> int:
-    """Número de dias corridos entre duas datas, inclusive."""
     return (b - a).days + 1
 
 
-def _get_or_404(db: Session, company_id: int, req_id: int) -> LeaveRequest:
-    r = (
-        db.query(LeaveRequest)
-        .filter(LeaveRequest.id == req_id, LeaveRequest.company_id == company_id)
-        .first()
-    )
+def _out(db: Session, r: LeaveRequest) -> dict:
+    """Serializa um pedido no formato do contrato (com collaborator_name)."""
+    nome = None
+    u = db.query(User).filter(User.id == r.collaborator_id).first()
+    if u:
+        nome = u.full_name
+    return {
+        "id": r.id,
+        "collaborator_id": r.collaborator_id,
+        "collaborator_name": nome,
+        "type": r.leave_type.value,
+        "start_date": r.start_date.isoformat(),
+        "end_date": r.end_date.isoformat(),
+        "days": r.days,
+        "reason": r.reason,
+        "status": r.status.value,
+        "document_name": r.document_name,
+        "document_url": r.document_url,
+        "averbado": r.averbado,
+    }
+
+
+def _get_or_404(db, company_id, rid) -> LeaveRequest:
+    r = db.query(LeaveRequest).filter(
+        LeaveRequest.id == rid, LeaveRequest.company_id == company_id
+    ).first()
     if not r:
         raise HTTPException(status_code=404, detail="Pedido não encontrado.")
     return r
 
 
-# ---------- Criar ----------
+# ---------- 1.1 Saldo ----------
 
-@router.post("", response_model=LeaveOut, status_code=201)
-def create_leave(
-    payload: LeaveIn,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """O colaborador submete um pedido de ausência."""
-    req = LeaveRequest(
-        company_id=current_user.company_id,
-        collaborator_id=current_user.id,
-        leave_type=payload.leave_type,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
-        days=_count_days(payload.start_date, payload.end_date),
-        reason=payload.reason,
-        document_name=payload.document_name,
-        document_url=payload.document_url,
-        status=LeaveStatus.PENDENTE_DIRECTOR,
-    )
-    db.add(req)
-    db.commit()
-    db.refresh(req)
-
-    # Notifica os directores da empresa.
-    directores = (
-        db.query(User)
-        .filter(User.company_id == current_user.company_id, User.role == UserRole.DIRECTOR)
-        .all()
-    )
-    for d in directores:
-        notify(
-            db, company_id=current_user.company_id, user_id=d.id,
-            title="Pedido de ausência para aprovar",
-            message=f"{current_user.full_name} submeteu um pedido de {payload.leave_type.value}.",
-            category="ausencia", link="/ausencias",
-        )
-    db.commit()
-    return req
-
-
-# ---------- Listar ----------
-
-@router.get("/me", response_model=list[LeaveOut])
-def my_leaves(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Os pedidos do próprio colaborador."""
-    return (
-        db.query(LeaveRequest)
-        .filter(
-            LeaveRequest.company_id == current_user.company_id,
-            LeaveRequest.collaborator_id == current_user.id,
-        )
-        .order_by(LeaveRequest.id.desc())
-        .all()
-    )
-
-
-@router.get("", response_model=list[LeaveOut])
-def list_leaves(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    status: LeaveStatus | None = None,
-):
-    """
-    Directores e Capital Humano veem os pedidos que lhes competem.
-    - Director: vê os pendentes de director (e o que já passou).
-    - Capital Humano/Administração: vê todos.
-    """
-    if current_user.role not in (UserRole.DIRECTOR, *CH_ROLES):
-        raise HTTPException(status_code=403, detail="Sem acesso.")
-    q = db.query(LeaveRequest).filter(LeaveRequest.company_id == current_user.company_id)
-    if status:
-        q = q.filter(LeaveRequest.status == status)
-    return q.order_by(LeaveRequest.id.desc()).all()
-
-
-# ---------- Aprovação do director ----------
-
-@router.post("/{req_id}/director-approve", response_model=LeaveOut)
-def director_approve(
-    req_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.DIRECTOR)),
-):
-    """O director aprova o pedido -> passa a pendente de averbamento pelo CH."""
-    req = _get_or_404(db, current_user.company_id, req_id)
-    if req.status != LeaveStatus.PENDENTE_DIRECTOR:
-        raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
-    req.status = LeaveStatus.PENDENTE_CH
-    # Notifica o Capital Humano.
-    for ch in db.query(User).filter(
-        User.company_id == current_user.company_id, User.role == UserRole.CAPITAL_HUMANO
-    ).all():
-        notify(
-            db, company_id=current_user.company_id, user_id=ch.id,
-            title="Ausência para averbar",
-            message="Um pedido de ausência foi aprovado pela chefia e aguarda averbamento.",
-            category="ausencia", link="/ausencias",
-        )
-    db.commit()
-    db.refresh(req)
-    return req
-
-
-@router.post("/{req_id}/director-reject", response_model=LeaveOut)
-def director_reject(
-    req_id: int,
-    payload: LeaveDecision,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.DIRECTOR)),
-):
-    """O director recusa o pedido."""
-    req = _get_or_404(db, current_user.company_id, req_id)
-    if req.status != LeaveStatus.PENDENTE_DIRECTOR:
-        raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
-    req.status = LeaveStatus.RECUSADA
-    req.decision_note = payload.note
-    notify(
-        db, company_id=current_user.company_id, user_id=req.collaborator_id,
-        title="Pedido de ausência recusado",
-        message="A chefia recusou o seu pedido de ausência.",
-        category="ausencia", link="/portal",
-    )
-    db.commit()
-    db.refresh(req)
-    return req
-
-
-# ---------- Averbamento do Capital Humano ----------
-
-@router.post("/{req_id}/ch-approve", response_model=LeaveOut)
-def ch_approve(
-    req_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*CH_ROLES)),
-):
-    """O Capital Humano averba o pedido -> aprovada."""
-    req = _get_or_404(db, current_user.company_id, req_id)
-    if req.status != LeaveStatus.PENDENTE_CH:
-        raise HTTPException(status_code=400, detail="O pedido não está pendente de averbamento.")
-    req.status = LeaveStatus.APROVADA
-    # Licença de maternidade: regista no percurso (ajuste do ciclo fica visível).
-    if req.leave_type == LeaveType.MATERNIDADE:
-        from app.models.career import CareerEvent
-        from app.models.enums import CareerEventType
-        ev = CareerEvent(
-            company_id=req.company_id,
-            collaborator_id=req.collaborator_id,
-            event_type=CareerEventType.OUTRO,
-            event_date=req.start_date,
-            title="Licença de maternidade",
-            description=(
-                f"Licença de maternidade de {req.start_date.isoformat()} a "
-                f"{req.end_date.isoformat()} ({req.days} dias). "
-                "O ciclo de avaliação neste período é ajustado."
-            ),
-        )
-        db.add(ev)
-    notify(
-        db, company_id=current_user.company_id, user_id=req.collaborator_id,
-        title="Ausência aprovada",
-        message="O seu pedido de ausência foi aprovado e averbado.",
-        category="ausencia", link="/portal",
-    )
-    db.commit()
-    db.refresh(req)
-    return req
-
-
-@router.post("/{req_id}/ch-reject", response_model=LeaveOut)
-def ch_reject(
-    req_id: int,
-    payload: LeaveDecision,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*CH_ROLES)),
-):
-    """O Capital Humano recusa no averbamento."""
-    req = _get_or_404(db, current_user.company_id, req_id)
-    if req.status != LeaveStatus.PENDENTE_CH:
-        raise HTTPException(status_code=400, detail="O pedido não está pendente de averbamento.")
-    req.status = LeaveStatus.RECUSADA
-    req.decision_note = payload.note
-    notify(
-        db, company_id=current_user.company_id, user_id=req.collaborator_id,
-        title="Pedido de ausência recusado",
-        message="O Capital Humano recusou o seu pedido de ausência.",
-        category="ausencia", link="/portal",
-    )
-    db.commit()
-    db.refresh(req)
-    return req
-
-
-# ---------- Saldo de férias ----------
-
-@router.get("/me/balance", response_model=BalanceOut)
+@router.get("/me/balance")
 def my_balance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    year: int | None = None,
+    ano: int | None = None,
 ):
-    """Saldo de férias do ano (22 dias menos os dias de férias já aprovados)."""
-    ano = year or date.today().year
-    aprovadas = (
+    """Saldo: direito (22), gozados (aprovadas passadas/averbadas), marcados (aprovadas futuras), disponiveis."""
+    year = ano or date.today().year
+    ferias = (
         db.query(LeaveRequest)
         .filter(
             LeaveRequest.company_id == current_user.company_id,
@@ -307,8 +86,214 @@ def my_balance(
         )
         .all()
     )
-    usados = sum(r.days for r in aprovadas if r.start_date.year == ano)
-    return BalanceOut(
-        year=ano, allowance=ANNUAL_ALLOWANCE, used=usados,
-        remaining=ANNUAL_ALLOWANCE - usados,
+    hoje = date.today()
+    gozados = sum(r.days for r in ferias if r.start_date.year == year and r.end_date < hoje)
+    marcados = sum(r.days for r in ferias if r.start_date.year == year and r.end_date >= hoje)
+    disponiveis = ANNUAL - gozados - marcados
+    return {"direito": ANNUAL, "gozados": gozados, "marcados": marcados, "disponiveis": disponiveis}
+
+
+# ---------- 1.2 Listar ----------
+
+@router.get("/requests")
+def list_requests(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Colaborador vê os seus; director vê a equipa; CH/admin veem todos."""
+    q = db.query(LeaveRequest).filter(LeaveRequest.company_id == current_user.company_id)
+    if current_user.role == UserRole.COLABORADOR:
+        q = q.filter(LeaveRequest.collaborator_id == current_user.id)
+    # director e CH/admin veem todos os da empresa (a equipa do director = empresa, simplificação)
+    rows = q.order_by(LeaveRequest.id.desc()).all()
+    return [_out(db, r) for r in rows]
+
+
+# ---------- 1.3 Criar (multipart) ----------
+
+@router.post("/requests", status_code=201)
+async def create_request(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    tipo: str = Form(...),
+    inicio: date = Form(...),
+    fim: date = Form(...),
+    motivo: str = Form(...),
+    documento: UploadFile | None = File(default=None),
+):
+    """O colaborador cria um pedido de férias ou falta (com documento opcional)."""
+    if tipo not in ("ferias", "falta"):
+        raise HTTPException(status_code=422, detail="Tipo inválido (ferias ou falta).")
+    if fim < inicio:
+        raise HTTPException(status_code=422, detail="A data de fim não pode ser anterior ao início.")
+
+    doc_name, doc_url = None, None
+    if documento is not None:
+        conteudo = await documento.read()
+        doc_name = documento.filename
+        doc_url = upload_file(conteudo, documento.filename, folder="kamba/ausencias")
+
+    # Máquina de estados do contrato:
+    if tipo == "falta" and documento is not None:
+        status = LeaveStatus.JUSTIFICADA  # falta com documento entra direto como justificada
+    else:
+        status = LeaveStatus.PENDENTE_DIR
+
+    r = LeaveRequest(
+        company_id=current_user.company_id,
+        collaborator_id=current_user.id,
+        leave_type=LeaveType(tipo),
+        start_date=inicio, end_date=fim,
+        days=_count_days(inicio, fim),
+        reason=motivo,
+        document_name=doc_name, document_url=doc_url,
+        status=status,
     )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+
+    # Notifica directores se precisa de aprovação.
+    if status == LeaveStatus.PENDENTE_DIR:
+        for d in db.query(User).filter(
+            User.company_id == current_user.company_id, User.role == UserRole.DIRECTOR
+        ).all():
+            notify(db, company_id=current_user.company_id, user_id=d.id,
+                   title="Pedido de ausência para aprovar",
+                   message=f"{current_user.full_name} submeteu um pedido de {tipo}.",
+                   category="ausencia", link="/ausencias")
+        db.commit()
+    return _out(db, r)
+
+
+# ---------- 1.4 / 1.5 Aprovar / Recusar (director) ----------
+
+@router.post("/requests/{rid}/approve")
+def approve_request(
+    rid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.DIRECTOR)),
+):
+    r = _get_or_404(db, current_user.company_id, rid)
+    if r.status != LeaveStatus.PENDENTE_DIR:
+        raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
+    r.status = LeaveStatus.APROVADA
+    notify(db, company_id=current_user.company_id, user_id=r.collaborator_id,
+           title="Ausência aprovada", message="A chefia aprovou o seu pedido de ausência.",
+           category="ausencia", link="/portal")
+    db.commit()
+    db.refresh(r)
+    return _out(db, r)
+
+
+class RejectIn(BaseModel):
+    motivo: str
+
+
+@router.post("/requests/{rid}/reject")
+def reject_request(
+    rid: int,
+    payload: RejectIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.DIRECTOR)),
+):
+    if not payload.motivo or len(payload.motivo.strip()) < 3:
+        raise HTTPException(status_code=422, detail="O motivo é obrigatório (mín. 3 caracteres).")
+    r = _get_or_404(db, current_user.company_id, rid)
+    if r.status != LeaveStatus.PENDENTE_DIR:
+        raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
+    r.status = LeaveStatus.RECUSADA
+    r.rejection_reason = payload.motivo
+    notify(db, company_id=current_user.company_id, user_id=r.collaborator_id,
+           title="Pedido de ausência recusado", message="A chefia recusou o seu pedido.",
+           category="ausencia", link="/portal")
+    db.commit()
+    db.refresh(r)
+    return _out(db, r)
+
+
+# ---------- 1.6 Maternidade (CH, multipart) ----------
+
+@router.post("/maternity", status_code=201)
+async def register_maternity(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+    collaborator_id: int = Form(...),
+    inicio: date = Form(...),
+    fim: date = Form(...),
+    motivo: str = Form(...),
+    documento: UploadFile | None = File(default=None),
+):
+    """O Capital Humano regista uma licença de maternidade (entra já como aprovada)."""
+    doc_name, doc_url = None, None
+    if documento is not None:
+        conteudo = await documento.read()
+        doc_name = documento.filename
+        doc_url = upload_file(conteudo, documento.filename, folder="kamba/maternidade")
+
+    r = LeaveRequest(
+        company_id=current_user.company_id,
+        collaborator_id=collaborator_id,
+        leave_type=LeaveType.MATERNIDADE,
+        start_date=inicio, end_date=fim,
+        days=_count_days(inicio, fim),
+        reason=motivo,
+        document_name=doc_name, document_url=doc_url,
+        status=LeaveStatus.APROVADA,
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+
+    # Regista no percurso do colaborador.
+    from app.models.career import CareerEvent
+    from app.models.enums import CareerEventType
+    db.add(CareerEvent(
+        company_id=current_user.company_id, collaborator_id=collaborator_id,
+        event_type=CareerEventType.OUTRO, event_date=inicio,
+        title="Licença de maternidade",
+        description=f"Licença de maternidade de {inicio.isoformat()} a {fim.isoformat()}.",
+    ))
+    notify(db, company_id=current_user.company_id, user_id=collaborator_id,
+           title="Licença de maternidade registada",
+           message="A sua licença de maternidade foi registada.",
+           category="ausencia", link="/portal")
+    db.commit()
+    return _out(db, r)
+
+
+# ---------- 1.7 Averbar no mapa (CH) ----------
+
+@router.post("/requests/{rid}/register")
+def register_in_map(
+    rid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+):
+    r = _get_or_404(db, current_user.company_id, rid)
+    if r.status not in (LeaveStatus.APROVADA, LeaveStatus.JUSTIFICADA):
+        raise HTTPException(status_code=400, detail="Só pedidos aprovados/justificados são averbados.")
+    r.averbado = True
+    db.commit()
+    db.refresh(r)
+    return _out(db, r)
+
+
+# ---------- 1.8 Mapa anual (reservado) ----------
+
+@router.get("/map")
+def annual_map(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+    ano: int | None = None,
+):
+    year = ano or date.today().year
+    rows = (
+        db.query(LeaveRequest)
+        .filter(
+            LeaveRequest.company_id == current_user.company_id,
+            LeaveRequest.averbado == True,  # noqa: E712
+        )
+        .all()
+    )
+    return [_out(db, r) for r in rows if r.start_date.year == year]

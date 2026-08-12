@@ -1,15 +1,16 @@
 """
-Pedidos de férias e ausências (módulo Férias & Ausências).
+Pedidos de férias e ausências — alinhado ao contrato do frontend.
 
-Fluxo: o colaborador submete um pedido (pendente_director) -> o director aprova
-(pendente_ch) ou recusa -> o Capital Humano averba (aprovada) ou recusa.
-Suporta férias (descontam do saldo de 22 dias/ano), faltas justificadas com
-documento, e licença de maternidade (marca ajuste do ciclo de avaliação).
+Máquina de estados (do contrato):
+- Férias: pendente_dir -> aprovada (ou -> recusada, com rejection_reason).
+- Falta com documento: entra direto como justificada.
+- Maternidade: criada já como aprovada (registo administrativo do CH).
+O campo 'averbado' marca que foi averbado no mapa anual (secção 1.7).
 Isolamento por company_id.
 """
 from datetime import datetime, timezone, date
 
-from sqlalchemy import String, Text, Integer, Date, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import String, Text, Integer, Date, DateTime, Boolean, ForeignKey, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -37,14 +38,13 @@ class LeaveRequest(Base):
     days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Documento justificativo carregado (nome para exibição e URL do Cloudinary).
+    # Documento comprovativo (nome para exibição + URL do Cloudinary).
     document_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     document_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    status: Mapped[LeaveStatus] = mapped_column(
-        SAEnum(LeaveStatus), default=LeaveStatus.PENDENTE_DIRECTOR, nullable=False
-    )
-    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # motivo de recusa, p.ex.
+    status: Mapped[LeaveStatus] = mapped_column(SAEnum(LeaveStatus), nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    averbado: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(

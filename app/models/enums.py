@@ -128,16 +128,16 @@ class CareerEventType(str, enum.Enum):
 
 
 class LeaveType(str, enum.Enum):
-    """Tipo de ausência (secção Férias & Ausências)."""
+    """Tipo de ausência — nomes conforme o contrato do frontend."""
     FERIAS = "ferias"
-    FALTA_JUSTIFICADA = "falta_justificada"
+    FALTA = "falta"
     MATERNIDADE = "maternidade"
-    OUTRA = "outra"
 
 
 class LeaveStatus(str, enum.Enum):
-    """Estados do pedido de ausência ao longo do fluxo de aprovação."""
-    PENDENTE_DIRECTOR = "pendente_director"   # aguarda aprovação da chefia
-    PENDENTE_CH = "pendente_ch"               # aprovada pela chefia, aguarda averbamento do CH
-    APROVADA = "aprovada"                     # averbada pelo Capital Humano
-    RECUSADA = "recusada"                     # recusada (pela chefia ou pelo CH)
+    """Estados do pedido — nomes conforme o contrato do frontend."""
+    PENDENTE_DIR = "pendente_dir"     # aguarda aprovação da chefia
+    PENDENTE_CH = "pendente_ch"       # (reservado) aprovada, aguarda averbamento
+    APROVADA = "aprovada"             # aprovada pelo director / registada
+    JUSTIFICADA = "justificada"       # falta com documento entra direto como justificada
+    RECUSADA = "recusada"             # recusada com motivo

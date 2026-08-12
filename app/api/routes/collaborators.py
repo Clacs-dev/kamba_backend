@@ -189,3 +189,90 @@ def reactivate_collaborator(
     db.commit()
     db.refresh(collaborator)
     return collaborator
+
+
+# ---------- Documentos anexados do colaborador (contrato secção 2) ----------
+
+from fastapi import UploadFile, File, Form
+from app.models.collaborator_document import CollaboratorDocument
+from app.services.cloudinary_upload import upload_file as _cloud_upload
+
+_DOC_TYPES = ("bi", "contrato_assinado", "certificado_habilitacoes", "outro")
+
+
+def _doc_out(d: CollaboratorDocument) -> dict:
+    return {
+        "id": d.id,
+        "filename": d.filename,
+        "doc_type": d.doc_type,
+        "file_url": d.file_url,
+        "uploaded_at": d.uploaded_at.isoformat(),
+    }
+
+
+@router.post("/{collaborator_id}/documents", status_code=201)
+async def upload_collaborator_document(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+    file: UploadFile = File(...),
+    doc_type: str = Form(...),
+):
+    """O Capital Humano anexa um documento (BI, contrato, certificado) a um colaborador."""
+    if doc_type not in _DOC_TYPES:
+        raise HTTPException(status_code=422, detail="Tipo de documento inválido.")
+    conteudo = await file.read()
+    url = _cloud_upload(conteudo, file.filename, folder="kamba/colaboradores")
+    doc = CollaboratorDocument(
+        company_id=current_user.company_id,
+        collaborator_id=collaborator_id,
+        filename=file.filename,
+        doc_type=doc_type,
+        file_url=url,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return _doc_out(doc)
+
+
+@router.get("/{collaborator_id}/documents")
+def list_collaborator_documents(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+):
+    """Lista os documentos anexados a um colaborador."""
+    rows = (
+        db.query(CollaboratorDocument)
+        .filter(
+            CollaboratorDocument.company_id == current_user.company_id,
+            CollaboratorDocument.collaborator_id == collaborator_id,
+        )
+        .order_by(CollaboratorDocument.id.desc())
+        .all()
+    )
+    return [_doc_out(d) for d in rows]
+
+
+@router.delete("/{collaborator_id}/documents/{doc_id}")
+def delete_collaborator_document(
+    collaborator_id: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+):
+    """Remove um documento anexado."""
+    d = (
+        db.query(CollaboratorDocument)
+        .filter(
+            CollaboratorDocument.id == doc_id,
+            CollaboratorDocument.company_id == current_user.company_id,
+        )
+        .first()
+    )
+    if not d:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    db.delete(d)
+    db.commit()
+    return {"detail": "Documento removido."}
