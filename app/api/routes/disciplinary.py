@@ -13,7 +13,7 @@ Regra do manual: não se pode saltar fases; nenhuma medida é averbada sem o
 processo percorrer todas as fases. Instrução compete ao Capital Humano.
 Isolamento por company_id.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -36,6 +36,22 @@ INSTRUCTOR_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+# Prazo legal de defesa do arguido (Lei Geral do Trabalho): 10 dias úteis
+# a contar da notificação da nota de culpa.
+DEFENSE_DEADLINE_DAYS = 10
+
+
+def _add_business_days(start: datetime, days: int) -> datetime:
+    """Soma 'days' dias úteis (seg-sex), ignorando fins de semana."""
+    d = start
+    added = 0
+    while added < days:
+        d = d + timedelta(days=1)
+        if d.weekday() < 5:
+            added += 1
+    return d
 
 
 def _get_or_404(db: Session, company_id: int, process_id: int) -> DisciplinaryProcess:
@@ -133,11 +149,12 @@ def issue_charge_note(
 
     p.charge_note = payload.charge_note
     p.preventive_suspension = payload.preventive_suspension
+    p.defense_deadline = _add_business_days(_now(), DEFENSE_DEADLINE_DAYS).date()
     p.phase = DisciplinaryPhase.NOTA_CULPA  # notificada -> aguarda conhecimento do arguido
     notify(
         db, company_id=p.company_id, user_id=p.accused_id,
         title="Nota de culpa",
-        message="Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
+        message=f"Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento; tem 10 dias úteis para apresentar defesa escrita.",
         category="disciplina", link=f"/disciplinary/{p.id}",
     )
     db.commit()

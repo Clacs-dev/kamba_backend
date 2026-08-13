@@ -406,3 +406,66 @@ def my_score_history(
     ]
     result.reverse()
     return result
+
+
+# ---------- Comparação por componente (para o ecrã da comissão) ----------
+
+@router.get("/{evaluation_id}/comparison")
+def evaluation_comparison(
+    evaluation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Devolve a comparação auto vs director por componente (objetivos,
+    competências, valores), com os pesos da empresa. Alimenta o ecrã da
+    Comissão de Avaliação e a concordância.
+    """
+    import json as _json
+    from app.services.evaluation_scoring import (
+        _score_objectives, _score_competencies, _score_values,
+    )
+    from app.api.routes.evaluation_settings import get_or_create_settings
+    from app.models.enums import EvaluationCategory
+
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+
+    cfg = get_or_create_settings(db, current_user.company_id)
+    if ev.category == EvaluationCategory.DIRIGENTE:
+        pesos = {"objectives": cfg.dir_objectives, "competencies": cfg.dir_competencies, "values": cfg.dir_values}
+    else:
+        pesos = {"objectives": cfg.tec_objectives, "competencies": cfg.tec_competencies, "values": cfg.tec_values}
+
+    def _scores(raw):
+        if not raw:
+            return {"objectives": None, "competencies": None, "values": None}
+        d = _json.loads(raw)
+        return {
+            "objectives": round(_score_objectives(d.get("objectives", [])), 2),
+            "competencies": round(_score_competencies(d.get("competencies", {})), 2),
+            "values": round(_score_values(d.get("values", {})), 2),
+        }
+
+    auto = _scores(ev.self_answers)
+    director = _scores(ev.director_answers)
+
+    # Nomes das respostas do recorrente/colaborador e do director.
+    colab = db.query(User).filter(User.id == ev.collaborator_id).first()
+    dirr = db.query(User).filter(User.id == ev.director_id).first()
+
+    return {
+        "evaluation_id": ev.id,
+        "collaborator_name": colab.full_name if colab else None,
+        "director_name": dirr.full_name if dirr else None,
+        "weights": {
+            "objectives": round(pesos["objectives"] * 100),
+            "competencies": round(pesos["competencies"] * 100),
+            "values": round(pesos["values"] * 100),
+        },
+        "auto": auto,
+        "director": director,
+        "final_score": ev.final_score,
+        "appeal_reason": ev.appeal_reason,
+        "commission_decision": ev.commission_decision,
+        "phase": ev.phase.value if hasattr(ev.phase, "value") else str(ev.phase),
+    }
