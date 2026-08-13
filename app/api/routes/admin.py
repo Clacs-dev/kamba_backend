@@ -1,0 +1,77 @@
+"""
+Rotas do módulo Administração (equivalente ao módulo "admin" do protótipo).
+
+Acesso: Capital Humano e Administração (no protótipo o módulo é visível a CH e CE).
+Reúne num só GET: dados da empresa (plano SaaS), parâmetros do ciclo e a
+trilha de auditoria recente — para a página "Administração" do frontend.
+"""
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.models.user import User
+from app.models.enums import UserRole
+from app.models.company import Company
+from app.models.audit import AuditEvent
+from app.api.deps import require_roles
+from app.api.routes.evaluation_settings import get_or_create_settings
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+ADMIN_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+
+
+@router.get("/overview")
+def admin_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+):
+    cid = current_user.company_id
+    company = db.query(Company).filter(Company.id == cid).first()
+
+    settings = get_or_create_settings(db, cid)
+
+    # Contagem de colaboradores da empresa (para o "Plano SaaS").
+    user_count = (
+        db.query(User).filter(User.company_id == cid, User.is_active == True).count()  # noqa: E712
+    )
+
+    audit_rows = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.company_id == cid)
+        .order_by(AuditEvent.created_at.desc())
+        .limit(12)
+        .all()
+    )
+
+    return {
+        "company": {
+            "id": company.id if company else None,
+            "name": company.name if company else "",
+            "nif": company.nif if company else None,
+            "plan": company.plan if company else "essencial",
+            "is_active": company.is_active if company else True,
+            "user_count": user_count,
+        },
+        "settings": {
+            "tec_objectives": round(settings.tec_objectives * 100),
+            "tec_competencies": round(settings.tec_competencies * 100),
+            "tec_values": round(settings.tec_values * 100),
+            "dir_objectives": round(settings.dir_objectives * 100),
+            "dir_competencies": round(settings.dir_competencies * 100),
+            "dir_values": round(settings.dir_values * 100),
+            "appeal_deadline_days": settings.appeal_deadline_days,
+            "cycle_calendar": settings.cycle_calendar,
+        },
+        "audit": [
+            {
+                "id": a.id,
+                "actor_name": a.actor_name,
+                "actor_role": a.actor_role,
+                "action": a.action,
+                "detail": a.detail,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in audit_rows
+        ],
+    }

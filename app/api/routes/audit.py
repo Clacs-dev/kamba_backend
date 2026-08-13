@@ -1,7 +1,8 @@
 """
 Rotas da trilha de auditoria (capítulo 7).
 
-Só a Administração acede — é o órgão que o manual indica para a auditoria.
+Acesso: Administração e Capital Humano — no protótipo o módulo de
+Administração (com a trilha) é visível a CH e CE.
 Isolamento por company_id.
 """
 from datetime import datetime
@@ -32,10 +33,10 @@ class AuditEventOut(BaseModel):
 @router.get("", response_model=list[AuditEventOut])
 def list_audit(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO)),
+    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO, UserRole.CAPITAL_HUMANO)),
     limit: int = Query(default=100, le=500),
 ):
-    """A Administração consulta a trilha de auditoria da empresa (mais recentes primeiro)."""
+    """A Administração e o Capital Humano consultam a trilha de auditoria da empresa (mais recentes primeiro)."""
     return (
         db.query(AuditEvent)
         .filter(AuditEvent.company_id == current_user.company_id)

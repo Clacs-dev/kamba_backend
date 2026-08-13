@@ -19,10 +19,11 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
+from app.models.company import Company
 from app.models.enums import UserRole, EvaluationPhase
 from app.models.evaluation import EvaluationCycle, Evaluation
 from app.schemas.evaluation import (
-    CycleCreate, CycleOut, EvaluationCreate, EvaluationOut,
+    CycleCreate, CycleOut, EvaluationCreate, EvaluationOut, EvaluationListOut,
     FormAnswers, AppealRequest, CommissionDecisionRequest,
 )
 from app.api.deps import get_current_user, require_roles
@@ -64,6 +65,20 @@ def _require_phase(ev: Evaluation, expected: EvaluationPhase):
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Ação inválida nesta fase. A avaliação está em '{ev.phase.value}', esperava-se '{expected.value}'.",
         )
+
+
+def _nomes(db: Session, ev: Evaluation) -> tuple[str | None, str | None]:
+    """Nomes do colaborador e do director de uma avaliação (para as listas)."""
+    colab = db.query(User).filter(User.id == ev.collaborator_id).first()
+    dirr = db.query(User).filter(User.id == ev.director_id).first()
+    return (colab.full_name if colab else None, dirr.full_name if dirr else None)
+
+
+def _list_out(db: Session, ev: Evaluation) -> EvaluationListOut:
+    """Serializa uma avaliação com os nomes das pessoas."""
+    base = EvaluationOut.model_validate(ev)
+    c, d = _nomes(db, ev)
+    return EvaluationListOut(**base.model_dump(), collaborator_name=c, director_name=d)
 
 
 # ---------- Ciclos (CH gere) ----------
@@ -155,7 +170,7 @@ def create_evaluation(
     return ev
 
 
-@router.get("", response_model=list[EvaluationOut])
+@router.get("", response_model=list[EvaluationListOut])
 def list_evaluations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -182,16 +197,131 @@ def list_evaluations(
     else:
         query = query.filter(Evaluation.collaborator_id == current_user.id)
 
-    return query.order_by(Evaluation.id.desc()).all()
+    rows = query.order_by(Evaluation.id.desc()).all()
+    return [_list_out(db, ev) for ev in rows]
 
 
-@router.get("/{evaluation_id}", response_model=EvaluationOut)
+# ---------- Histórico (3 ciclos) — módulo "Histórico" do protótipo ----------
+# Definido antes de /{evaluation_id} para não ser ofuscado pelo conversor.
+
+from pydantic import BaseModel as _BaseModel
+from app.models.evaluation import EvaluationCycle as _Cycle
+from app.models.employee_profile import EmployeeProfile as _Profile
+
+
+class HistoryDistributionItem(_BaseModel):
+    level: str
+    count: int
+
+
+class HistoryDirectionItem(_BaseModel):
+    department: str | None
+    average: float | None
+    count: int
+
+
+class HistoryCycleItem(_BaseModel):
+    cycle_id: int
+    cycle_name: str
+    global_average: float | None
+    evaluated_count: int
+    distribution: list[HistoryDistributionItem]
+    by_direction: list[HistoryDirectionItem]
+
+
+class EvaluationHistoryOut(_BaseModel):
+    company_name: str
+    cycles: list[HistoryCycleItem]
+
+
+@router.get("/history", response_model=EvaluationHistoryOut)
+def evaluation_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 3,
+):
+    """
+    Histórico homologado dos últimos ciclos (por defeito 3): média global,
+    distribuição por níveis e média por direcção — tal como o módulo
+    "Histórico (3 anos)" do protótipo. Acessível a todos os perfis.
+    """
+    cid = current_user.company_id
+    company = db.query(Company).filter(Company.id == cid).first()
+    cycles = (
+        db.query(_Cycle)
+        .filter(_Cycle.company_id == cid)
+        .order_by(_Cycle.id.desc())
+        .limit(limit)
+        .all()
+    )
+    cycles.reverse()  # mais antigo -> mais recente (melhor para o gráfico)
+
+    out_cycles: list[HistoryCycleItem] = []
+    for cyc in cycles:
+        evals = (
+            db.query(Evaluation, User, _Profile)
+            .join(User, Evaluation.collaborator_id == User.id)
+            .outerjoin(_Profile, _Profile.user_id == User.id)
+            .filter(
+                Evaluation.company_id == cid,
+                Evaluation.cycle_id == cyc.id,
+                Evaluation.final_score.isnot(None),
+            )
+            .all()
+        )
+        scores = [ev.final_score for ev, _, _ in evals]
+        avg = round(sum(scores) / len(scores), 2) if scores else None
+
+        # Distribuição por classificação (níveis da escala do manual).
+        niveis = [
+            ("Excelente (≥4,5)", lambda s: s >= 4.5),
+            ("Muito Bom (4,0–4,4)", lambda s: 4.0 <= s < 4.5),
+            ("Bom (3,0–3,9)", lambda s: 3.0 <= s < 4.0),
+            ("Suficiente (2,5–2,9)", lambda s: 2.5 <= s < 3.0),
+            ("Insuficiente (<2,5)", lambda s: s < 2.5),
+        ]
+        distribution = [
+            HistoryDistributionItem(level=n, count=sum(1 for s in scores if pred(s)))
+            for n, pred in niveis
+        ]
+
+        # Média por direcção (departamento da ficha do colaborador).
+        by_dept: dict[str | None, list[float]] = {}
+        for ev, _, prof in evals:
+            dep = prof.department if prof else None
+            by_dept.setdefault(dep, []).append(ev.final_score)
+        by_direction = [
+            HistoryDirectionItem(
+                department=dep,
+                average=round(sum(v) / len(v), 2),
+                count=len(v),
+            )
+            for dep, v in sorted(by_dept.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))
+        ]
+
+        out_cycles.append(HistoryCycleItem(
+            cycle_id=cyc.id,
+            cycle_name=cyc.name,
+            global_average=avg,
+            evaluated_count=len(scores),
+            distribution=distribution,
+            by_direction=by_direction,
+        ))
+
+    return EvaluationHistoryOut(
+        company_name=company.name if company else "",
+        cycles=out_cycles,
+    )
+
+
+@router.get("/{evaluation_id}", response_model=EvaluationListOut)
 def get_evaluation(
     evaluation_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
+    return _list_out(db, ev)
 
 
 # ---------- Fase 1: Autoavaliação (colaborador) ----------
@@ -208,14 +338,28 @@ def submit_self_assessment(
     if ev.collaborator_id != current_user.id:
         raise HTTPException(status_code=403, detail="Só o próprio colaborador pode submeter a autoavaliação.")
 
+    # Nota provisória da autoavaliação (para o Director saber o que o
+    # colaborador respondeu antes de fazer a sua parte — como no protótipo).
+    from app.api.routes.evaluation_settings import get_or_create_settings
+    from app.models.enums import EvaluationCategory
+    cfg = get_or_create_settings(db, current_user.company_id)
+    if ev.category == EvaluationCategory.DIRIGENTE:
+        pesos = {"objectives": cfg.dir_objectives, "competencies": cfg.dir_competencies, "values": cfg.dir_values}
+    else:
+        pesos = {"objectives": cfg.tec_objectives, "competencies": cfg.tec_competencies, "values": cfg.tec_values}
+    prov_score, _ = compute_score(answers.model_dump(), ev.category, weights=pesos)
+
+    colab = db.query(User).filter(User.id == ev.collaborator_id).first()
     ev.self_answers = answers.model_dump_json()
     ev.phase = EvaluationPhase.AVALIACAO_DIRECTOR  # -> notifica Director (fase 2)
     notify(
         db, company_id=ev.company_id, user_id=ev.director_id,
         title="Autoavaliação submetida",
-        message="Um colaborador submeteu a autoavaliação. Já pode avaliar.",
+        message=f"{colab.full_name} terminou a autoavaliação (nota provisória {prov_score}). A sua avaliação está pendente.",
         category="avaliacao", link=f"/evaluations/{ev.id}",
     )
+    audit(db, actor=current_user, action="avaliacao.autoavaliacao",
+          detail=f"Autoavaliação de {colab.full_name} submetida e selada (nota provisória {prov_score}).")
     db.commit()
     db.refresh(ev)
     return ev
@@ -254,9 +398,11 @@ def submit_director_assessment(
     notify(
         db, company_id=ev.company_id, user_id=ev.collaborator_id,
         title="Avaliação disponível",
-        message="A sua chefia concluiu a avaliação. Pode aceitar ou recorrer.",
+        message=f"A sua chefia concluiu a avaliação (nota {score} — {classification}). Leia e decida: aceitar ou recorrer.",
         category="avaliacao", link=f"/evaluations/{ev.id}",
     )
+    audit(db, actor=current_user, action="avaliacao.director",
+          detail=f"Avaliação do director submetida (nota {score}).")
     db.commit()
     db.refresh(ev)
     return ev
@@ -276,6 +422,8 @@ def accept_evaluation(
         raise HTTPException(status_code=403, detail="Só o próprio colaborador pode aceitar.")
 
     ev.phase = EvaluationPhase.FECHADA  # aceite -> consolidada (fase 5)
+    audit(db, actor=current_user, action="avaliacao.concordancia",
+          detail=f"Avaliação #{ev.id} aceite pelo colaborador.")
     db.commit()
     db.refresh(ev)
     return ev
@@ -304,13 +452,16 @@ def appeal_evaluation(
         .filter(User.company_id == ev.company_id, User.role == UserRole.COMISSAO_AVALIACAO)
         .all()
     )
+    colab = db.query(User).filter(User.id == ev.collaborator_id).first()
     for m in membros:
         notify(
             db, company_id=ev.company_id, user_id=m.id,
             title="Novo recurso de avaliação",
-            message="Um colaborador recorreu de uma avaliação. A comissão tem 8 dias úteis para decidir.",
+            message=f"Recurso de {colab.full_name} recebido. Prazo de decisão: {cfg.appeal_deadline_days} dias úteis.",
             category="avaliacao", link=f"/evaluations/{ev.id}",
         )
+    audit(db, actor=current_user, action="avaliacao.recurso",
+          detail=f"Recurso interposto por {colab.full_name} na avaliação #{ev.id}.")
     db.commit()
     db.refresh(ev)
     return ev
@@ -338,6 +489,8 @@ def commission_decision(
             message="A Comissão de Avaliação decidiu o recurso. A avaliação está consolidada.",
             category="avaliacao", link=f"/evaluations/{ev.id}",
         )
+    audit(db, actor=current_user, action="avaliacao.comissao",
+          detail=f"Decisão da comissão na avaliação #{ev.id}: {payload.decision}")
     db.commit()
     db.refresh(ev)
     return ev
@@ -417,16 +570,17 @@ def evaluation_comparison(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Devolve a comparação auto vs director por componente (objetivos,
-    competências, valores), com os pesos da empresa. Alimenta o ecrã da
-    Comissão de Avaliação e a concordância.
+    Devolve a comparação auto vs director POR COMPONENTE e com o detalhe das
+    respostas (objetivos, competências, valores), com os pesos da empresa.
+    Alimenta o ecrã da Comissão de Avaliação e a concordância, tal como o
+    protótipo: cada lado lado a lado, com a nota final provisória de cada um.
     """
     import json as _json
+    from app.api.routes.evaluation_settings import get_or_create_settings
+    from app.models.enums import EvaluationCategory
     from app.services.evaluation_scoring import (
         _score_objectives, _score_competencies, _score_values,
     )
-    from app.api.routes.evaluation_settings import get_or_create_settings
-    from app.models.enums import EvaluationCategory
 
     ev = _get_eval_or_404(db, current_user.company_id, evaluation_id)
 
@@ -436,20 +590,25 @@ def evaluation_comparison(
     else:
         pesos = {"objectives": cfg.tec_objectives, "competencies": cfg.tec_competencies, "values": cfg.tec_values}
 
-    def _scores(raw):
+    def _lado(raw):
+        """Devolve as respostas detalhadas + pontuação provisória de um lado."""
         if not raw:
-            return {"objectives": None, "competencies": None, "values": None}
+            return None
         d = _json.loads(raw)
+        final, cls = compute_score(d, ev.category, weights=pesos)
         return {
-            "objectives": round(_score_objectives(d.get("objectives", [])), 2),
-            "competencies": round(_score_competencies(d.get("competencies", {})), 2),
-            "values": round(_score_values(d.get("values", {})), 2),
+            "objectives": d.get("objectives", []),        # [{description, weight, execution}]
+            "competencies": d.get("competencies", {}),     # {chave: 1-5}
+            "values": d.get("values", {}),                 # {chave: bool}
+            "scores": {
+                "objectives": round(_score_objectives(d.get("objectives", [])), 2),
+                "competencies": round(_score_competencies(d.get("competencies", {})), 2),
+                "values": round(_score_values(d.get("values", {})), 2),
+            },
+            "final": final,
+            "classification": cls,
         }
 
-    auto = _scores(ev.self_answers)
-    director = _scores(ev.director_answers)
-
-    # Nomes das respostas do recorrente/colaborador e do director.
     colab = db.query(User).filter(User.id == ev.collaborator_id).first()
     dirr = db.query(User).filter(User.id == ev.director_id).first()
 
@@ -457,15 +616,18 @@ def evaluation_comparison(
         "evaluation_id": ev.id,
         "collaborator_name": colab.full_name if colab else None,
         "director_name": dirr.full_name if dirr else None,
+        "category": ev.category.value if hasattr(ev.category, "value") else str(ev.category),
+        "phase": ev.phase.value if hasattr(ev.phase, "value") else str(ev.phase),
         "weights": {
             "objectives": round(pesos["objectives"] * 100),
             "competencies": round(pesos["competencies"] * 100),
             "values": round(pesos["values"] * 100),
         },
-        "auto": auto,
-        "director": director,
+        "auto": _lado(ev.self_answers),
+        "director": _lado(ev.director_answers),
         "final_score": ev.final_score,
+        "classification": ev.classification,
         "appeal_reason": ev.appeal_reason,
+        "appeal_deadline": ev.appeal_deadline.isoformat() if ev.appeal_deadline else None,
         "commission_decision": ev.commission_decision,
-        "phase": ev.phase.value if hasattr(ev.phase, "value") else str(ev.phase),
     }

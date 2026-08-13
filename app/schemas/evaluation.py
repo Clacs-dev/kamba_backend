@@ -100,3 +100,10 @@ class EvaluationOut(BaseModel):
         if prazo.tzinfo is None:
             prazo = prazo.replace(tzinfo=timezone.utc)
         return (prazo - agora).days
+
+
+class EvaluationListOut(EvaluationOut):
+    """Igual à saída de uma avaliação, mas com os nomes das pessoas (para as
+    listas e dossiers, sem o frontend ter de pedir a lista de colaboradores)."""
+    collaborator_name: str | None = None
+    director_name: str | None = None
