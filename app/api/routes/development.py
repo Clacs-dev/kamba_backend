@@ -19,6 +19,7 @@ from app.schemas.development import (
     DevelopmentPlanCreate, DevelopmentPlanOut, DevelopmentActionOut,
 )
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/development-plans", tags=["development"])
 
@@ -82,6 +83,8 @@ def create_plan(
         ))
 
     db.commit()
+    audit(db, actor=current_user, action="formacao.pid_criado",
+          detail=f"PID {plan.year} criado para {collab.full_name} ({len(payload.actions)} ações).")
     db.refresh(plan)
     return _serialize(db, plan)
 
@@ -146,5 +149,7 @@ def complete_action(
         p.status = DevelopmentPlanStatus.CONCLUIDO
 
     db.commit()
+    audit(db, actor=current_user, action="formacao.pid_acao_concluida",
+          detail=f"Ação '{action.title}' concluída no PID do colaborador {p.collaborator_id}.")
     db.refresh(p)
     return _serialize(db, p)

@@ -14,6 +14,7 @@ from app.models.user import User
 from app.models.enums import UserRole
 from app.models.evaluation_settings import EvaluationSettings
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/evaluation-settings", tags=["evaluation-settings"])
 
@@ -91,6 +92,10 @@ def update_settings(
     s.dir_values = payload.dir_values
     s.appeal_deadline_days = payload.appeal_deadline_days
     s.cycle_calendar = payload.cycle_calendar
+    audit(db, actor=current_user, action="avaliacao.parametros_alterados",
+          detail=f"Ponderações (técnico {payload.tec_objectives:.0%}/{payload.tec_competencies:.0%}/{payload.tec_values:.0%}, "
+                 f"dirigente {payload.dir_objectives:.0%}/{payload.dir_competencies:.0%}/{payload.dir_values:.0%}), "
+                 f"prazo de recurso {payload.appeal_deadline_days} dias úteis.")
     db.commit()
     db.refresh(s)
     return s

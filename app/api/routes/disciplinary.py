@@ -100,6 +100,8 @@ def open_process(
         phase=DisciplinaryPhase.INSTAURACAO,
     )
     db.add(p)
+    audit(db, actor=current_user, action="disciplina.instaurado",
+          detail=f"Processo {p.reference} instaurado contra {accused.full_name}.")
     db.commit()
     db.refresh(p)
     return p
@@ -158,6 +160,9 @@ def issue_charge_note(
         message=f"Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento; tem 10 dias úteis para apresentar defesa escrita.",
         category="disciplina", link=f"/disciplinary/{p.id}",
     )
+    audit(db, actor=current_user, action="disciplina.nota_culpa",
+          detail=f"Nota de culpa emitida no processo {p.reference} "
+                 f"({'com' if payload.preventive_suspension else 'sem'} suspensão preventiva).")
     db.commit()
     db.refresh(p)
     return p
@@ -178,6 +183,8 @@ def acknowledge_charge(
 
     p.charge_ack_at = _now()
     p.phase = DisciplinaryPhase.DEFESA  # -> pode apresentar defesa
+    audit(db, actor=current_user, action="disciplina.conhecimento_nota_culpa",
+          detail=f"Arguido tomou conhecimento da nota de culpa no processo {p.reference}.")
     db.commit()
     db.refresh(p)
     return p
@@ -205,6 +212,8 @@ def submit_defense(
     p.defense_text = payload.defense_text
     p.defense_submitted_at = _now()
     p.phase = DisciplinaryPhase.DECISAO  # -> aguarda decisão do instrutor
+    audit(db, actor=current_user, action="disciplina.defesa",
+          detail=f"Defesa submetida no processo {p.reference}.")
     db.commit()
     db.refresh(p)
     return p
@@ -253,6 +262,8 @@ def acknowledge_decision(
 
     p.decision_ack_at = _now()
     p.phase = DisciplinaryPhase.ARQUIVADO  # encerrado e averbado
+    audit(db, actor=current_user, action="disciplina.arquivado",
+          detail=f"Processo {p.reference} encerrado e averbado após conhecimento da decisão.")
     db.commit()
     db.refresh(p)
     return p

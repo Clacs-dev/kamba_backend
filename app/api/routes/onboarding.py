@@ -14,6 +14,7 @@ from app.models.user import User
 from app.models.enums import UserRole
 from app.models.onboarding import OnboardingItem
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
@@ -77,6 +78,8 @@ def create_item(
         description=payload.description,
     )
     db.add(item)
+    audit(db, actor=current_user, action="acolhimento.item_criado",
+          detail=f"Item de acolhimento criado para o colaborador #{payload.collaborator_id}.")
     db.commit()
     db.refresh(item)
     return item
@@ -91,6 +94,9 @@ def toggle_item(
     """Marca/desmarca um item como concluído."""
     item = _get_item(db, current_user.company_id, item_id)
     item.done = not item.done
+    audit(db, actor=current_user, action="acolhimento.item_alternado",
+          detail=f"Item de acolhimento #{item.id} marcado como "
+                 f"{'concluído' if item.done else 'pendente'}.")
     db.commit()
     db.refresh(item)
     return item

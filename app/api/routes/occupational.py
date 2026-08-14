@@ -18,6 +18,7 @@ from app.models.enums import UserRole
 from app.models.occupational import OccupationalExam
 from app.schemas.occupational import ExamCreate, ExamOut, OverdueExam
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/occupational-health", tags=["occupational_health"])
 
@@ -47,6 +48,9 @@ def register_exam(
         restriction_note=payload.restriction_note,
     )
     db.add(exam)
+    audit(db, actor=current_user, action="saude.exame_registado",
+          detail=f"Exame médico de {collab.full_name} registado "
+                 f"({exam.fitness.value if exam.fitness else 'n/a'} em {exam.exam_date}).")
     db.commit()
     db.refresh(exam)
     return exam

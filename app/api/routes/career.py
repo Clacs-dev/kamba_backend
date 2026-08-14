@@ -30,6 +30,7 @@ from app.models.occupational import OccupationalExam
 from app.models.training import TrainingAction
 from app.schemas.career import CareerEventCreate, CareerEventOut, TimelineItem
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/career", tags=["career"])
 
@@ -65,6 +66,9 @@ def add_event(
         description=payload.description,
     )
     db.add(ev)
+    audit(db, actor=current_user, action="percurso.evento",
+          detail=f"Evento '{payload.title}' ({payload.event_type.value}) registado "
+                 f"no percurso de {collab.full_name}.")
     db.commit()
     db.refresh(ev)
     return ev

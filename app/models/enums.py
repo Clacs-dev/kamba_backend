@@ -144,6 +144,7 @@ class LeaveType(str, enum.Enum):
     FERIAS = "ferias"
     FALTA = "falta"
     MATERNIDADE = "maternidade"
+    DOENCA = "doenca"  # doença prolongada — ajusta o ciclo de avaliação
 
 
 class LeaveStatus(str, enum.Enum):

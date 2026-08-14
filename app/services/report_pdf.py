@@ -106,6 +106,60 @@ def gerar_pdf_relatorio(report, company_name: str) -> bytes:
     return buf.read()
 
 
+def gerar_pdf_auditoria(rows: list, company_name: str) -> bytes:
+    """
+    Gera o PDF da trilha de auditoria, para exportar e apresentar ao Conselho
+    de Administração (capítulo 7) — suporte probatório do procedimento.
+    `rows` é uma lista de objetos com id, actor_name, actor_role, action,
+    detail e created_at.
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=2 * cm, bottomMargin=2 * cm, leftMargin=2 * cm, rightMargin=2 * cm,
+        title="Trilha de Auditoria",
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Title"], textColor=PRI, fontSize=18, spaceAfter=4)
+    eyebrow = ParagraphStyle("eyebrow", parent=styles["Normal"], textColor=DIM, fontSize=8, spaceAfter=2)
+    normal = styles["Normal"]
+
+    story = []
+    story.append(Paragraph("KAMBA · TRILHA DE AUDITORIA", eyebrow))
+    story.append(Paragraph("Registo imutável dos atos praticados na plataforma", h1))
+    story.append(Paragraph(f"Empresa: {company_name}", normal))
+    story.append(Paragraph(f"Gerado em {date.today().strftime('%d/%m/%Y')}", normal))
+    story.append(Paragraph(f"Total de registos exportados: {len(rows)}", normal))
+    story.append(Spacer(1, 6))
+
+    if rows:
+        dados = [["Data", "Ato", "Autor", "Perfil", "Detalhe"]]
+        for r in rows:
+            ts = ""
+            if getattr(r, "created_at", None):
+                ts = r.created_at.strftime("%d/%m/%Y %H:%M") if hasattr(r.created_at, "strftime") else str(r.created_at)
+            ato = getattr(r, "action", "") or ""
+            autor = getattr(r, "actor_name", "") or ""
+            perfil = getattr(r, "actor_role", "") or ""
+            det = (getattr(r, "detail", "") or "")[:180]
+            dados.append([ts, ato, autor, perfil, det])
+        t = Table(dados, colWidths=[3 * cm, 3.5 * cm, 3 * cm, 2.5 * cm, 4.5 * cm])
+        t.setStyle(_estilo_tabela(cabecalho=True))
+        story.append(t)
+    else:
+        story.append(Paragraph("Sem registos de auditoria.", normal))
+
+    story.append(Spacer(1, 20))
+    rodape = ParagraphStyle("rodape", parent=normal, textColor=DIM, fontSize=8)
+    story.append(Paragraph(
+        "Documento gerado automaticamente pela plataforma KAMBA. Registo imutável, "
+        "carimbo temporal; destina-se ao Conselho de Administração como prova documental.", rodape))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
+
 def _estilo_tabela(cabecalho: bool = False) -> TableStyle:
     estilos = [
         ("GRID", (0, 0), (-1, -1), 0.5, LINE),

@@ -23,6 +23,7 @@ from app.models.enums import UserRole, LeaveType, LeaveStatus
 from app.models.leave import LeaveRequest
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
+from app.services.audit import audit
 from app.services.cloudinary_upload import upload_file
 
 router = APIRouter(prefix="/leave", tags=["leave"])
@@ -150,6 +151,9 @@ async def create_request(
         status=status,
     )
     db.add(r)
+    audit(db, actor=current_user, action="ausencia.pedido_criado",
+          detail=f"{current_user.full_name} submeteu um pedido de {tipo} "
+                 f"({inicio.isoformat()} a {fim.isoformat()}).")
     db.commit()
     db.refresh(r)
 
@@ -178,6 +182,8 @@ def approve_request(
     if r.status != LeaveStatus.PENDENTE_DIR:
         raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
     r.status = LeaveStatus.APROVADA
+    audit(db, actor=current_user, action="ausencia.aprovada",
+          detail=f"Pedido #{r.id} ({r.leave_type.value}) de {r.collaborator_id} aprovado.")
     notify(db, company_id=current_user.company_id, user_id=r.collaborator_id,
            title="Ausência aprovada", message="A chefia aprovou o seu pedido de ausência.",
            category="ausencia", link="/portal")
@@ -204,6 +210,8 @@ def reject_request(
         raise HTTPException(status_code=400, detail="O pedido não está pendente do director.")
     r.status = LeaveStatus.RECUSADA
     r.rejection_reason = payload.motivo
+    audit(db, actor=current_user, action="ausencia.recusada",
+          detail=f"Pedido #{r.id} recusado: {payload.motivo}.")
     notify(db, company_id=current_user.company_id, user_id=r.collaborator_id,
            title="Pedido de ausência recusado", message="A chefia recusou o seu pedido.",
            category="ausencia", link="/portal")
@@ -242,6 +250,9 @@ async def register_maternity(
         status=LeaveStatus.APROVADA,
     )
     db.add(r)
+    audit(db, actor=current_user, action="ausencia.maternidade_registada",
+          detail=f"Licença de maternidade do colaborador {collaborator_id} "
+                 f"({inicio.isoformat()} a {fim.isoformat()}).")
     db.commit()
     db.refresh(r)
 
@@ -262,7 +273,61 @@ async def register_maternity(
     return _out(db, r)
 
 
-# ---------- 1.7 Averbar no mapa (CH) ----------
+# ---------- 1.7 Doença prolongada (CH, multipart) ----------
+
+@router.post("/prolonged-illness", status_code=201)
+async def register_prolonged_illness(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+    collaborator_id: int = Form(...),
+    inicio: date = Form(...),
+    fim: date = Form(...),
+    motivo: str = Form(...),
+    documento: UploadFile | None = File(default=None),
+):
+    """O Capital Humano regista uma licença por doença prolongada (entra aprovada).
+    Ajusta o ciclo de avaliação do colaborador (secção 3.1 / 8)."""
+    doc_name, doc_url = None, None
+    if documento is not None:
+        conteudo = await documento.read()
+        doc_name = documento.filename
+        doc_url = upload_file(conteudo, documento.filename, folder="kamba/doenca")
+
+    r = LeaveRequest(
+        company_id=current_user.company_id,
+        collaborator_id=collaborator_id,
+        leave_type=LeaveType.DOENCA,
+        start_date=inicio, end_date=fim,
+        days=_count_days(inicio, fim),
+        reason=motivo,
+        document_name=doc_name, document_url=doc_url,
+        status=LeaveStatus.APROVADA,
+    )
+    db.add(r)
+    audit(db, actor=current_user, action="ausencia.doenca_registada",
+          detail=f"Licença por doença prolongada do colaborador {collaborator_id} "
+                 f"({inicio.isoformat()} a {fim.isoformat()}).")
+    db.commit()
+    db.refresh(r)
+
+    # Regista no percurso do colaborador.
+    from app.models.career import CareerEvent
+    from app.models.enums import CareerEventType
+    db.add(CareerEvent(
+        company_id=current_user.company_id, collaborator_id=collaborator_id,
+        event_type=CareerEventType.OUTRO, event_date=inicio,
+        title="Licença por doença prolongada",
+        description=f"Licença por doença prolongada de {inicio.isoformat()} a {fim.isoformat()}.",
+    ))
+    notify(db, company_id=current_user.company_id, user_id=collaborator_id,
+           title="Licença por doença prolongada registada",
+           message="A sua licença por doença prolongada foi registada.",
+           category="ausencia", link="/portal")
+    db.commit()
+    return _out(db, r)
+
+
+# ---------- 1.8 Averbar no mapa (CH) ----------
 
 @router.post("/requests/{rid}/register")
 def register_in_map(
@@ -274,6 +339,8 @@ def register_in_map(
     if r.status not in (LeaveStatus.APROVADA, LeaveStatus.JUSTIFICADA):
         raise HTTPException(status_code=400, detail="Só pedidos aprovados/justificados são averbados.")
     r.averbado = True
+    audit(db, actor=current_user, action="ausencia.averbada",
+          detail=f"Pedido #{r.id} averbado no mapa anual.")
     db.commit()
     db.refresh(r)
     return _out(db, r)

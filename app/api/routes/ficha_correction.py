@@ -17,6 +17,7 @@ from app.models.enums import UserRole
 from app.models.ficha_correction import FichaCorrectionRequest
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
+from app.services.audit import audit
 
 router = APIRouter(prefix="/ficha-corrections", tags=["ficha-corrections"])
 
@@ -69,6 +70,8 @@ def submit_correction(
             message=f"{current_user.full_name} requereu uma correção à ficha.",
             category="ficha", link="/colaboradores",
         )
+    audit(db, actor=current_user, action="ficha.correcao_pedida",
+          detail="Pedido de correção de ficha submetido pelo próprio colaborador.")
     db.commit()
     return req
 
@@ -124,6 +127,8 @@ def resolve_correction(
         raise HTTPException(status_code=404, detail="Pedido não encontrado.")
     req.status = "resolvido"
     req.resolved_at = datetime.now(timezone.utc)
+    audit(db, actor=current_user, action="ficha.correcao_resolvida",
+          detail=f"Pedido de correção de ficha #{req.id} resolvido.")
     notify(
         db, company_id=current_user.company_id, user_id=req.collaborator_id,
         title="Pedido de correção tratado",

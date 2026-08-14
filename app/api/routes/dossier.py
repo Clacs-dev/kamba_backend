@@ -21,6 +21,7 @@ from app.schemas.dossier import (
     DocumentReadReceipt, SignatureCreate, SignatureOut,
 )
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(tags=["dossier"])
 
@@ -42,6 +43,8 @@ def create_document(
         content=payload.content,
     )
     db.add(doc)
+    audit(db, actor=current_user, action="documento.publicado",
+          detail=f"Publicado documento '{payload.title}' ({payload.doc_type}).")
     db.commit()
     db.refresh(doc)
     return doc
@@ -63,6 +66,8 @@ def update_document(
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(doc, field, value)
+    audit(db, actor=current_user, action="documento.alterado",
+          detail=f"Documento '{doc.title}' atualizado.")
     db.commit()
     db.refresh(doc)
     return doc

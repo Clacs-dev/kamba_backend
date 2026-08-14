@@ -4,8 +4,10 @@ Rotas do módulo Administração (equivalente ao módulo "admin" do protótipo).
 Acesso: Capital Humano e Administração (no protótipo o módulo é visível a CH e CE).
 Reúne num só GET: dados da empresa (plano SaaS), parâmetros do ciclo e a
 trilha de auditoria recente — para a página "Administração" do frontend.
+Permite ainda gerir o plano de subscrição.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -15,10 +17,18 @@ from app.models.company import Company
 from app.models.audit import AuditEvent
 from app.api.deps import require_roles
 from app.api.routes.evaluation_settings import get_or_create_settings
+from app.services.audit import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 ADMIN_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+
+# Planos de subscrição disponíveis (secção 10 do manual).
+PLANOS_VALIDOS = {"essencial", "empresarial", "corporativo", "institucional"}
+
+
+class PlanUpdate(BaseModel):
+    plan: str = Field(..., min_length=2, max_length=50)
 
 
 @router.get("/overview")
@@ -75,3 +85,25 @@ def admin_overview(
             for a in audit_rows
         ],
     }
+
+
+@router.put("/company/plan")
+def update_company_plan(
+    payload: PlanUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+):
+    """Gestão do plano de subscrição (secção 10). Fica registado na auditoria."""
+    if payload.plan not in PLANOS_VALIDOS:
+        raise HTTPException(status_code=422, detail=f"Plano inválido. Use um de: {', '.join(sorted(PLANOS_VALIDOS))}.")
+
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    if company is None:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+    anterior = company.plan
+    company.plan = payload.plan
+    audit(db, actor=current_user, action="admin.plano_alterado",
+          detail=f"Plano de subscrição alterado: {anterior} → {payload.plan}.")
+    db.commit()
+    return {"plan": company.plan, "anterior": anterior}

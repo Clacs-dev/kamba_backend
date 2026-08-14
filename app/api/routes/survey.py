@@ -22,6 +22,7 @@ from app.schemas.survey import (
     SurveyCreate, SurveyOut, SurveyResponseSubmit, SurveyResults,
 )
 from app.api.deps import get_current_user, require_roles
+from app.services.audit import audit
 
 router = APIRouter(prefix="/surveys", tags=["culture"])
 
@@ -59,6 +60,8 @@ def create_survey(
         dimensions=json.dumps(payload.dimensions),
     )
     db.add(survey)
+    audit(db, actor=current_user, action="cultura.pulse_criado",
+          detail=f"Inquérito-pulso '{payload.title}' criado ({len(payload.dimensions)} dimensões).")
     db.commit()
     db.refresh(survey)
     return _to_out(survey)
@@ -133,6 +136,8 @@ def close_survey(
 ):
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
     survey.status = SurveyStatus.FECHADO
+    audit(db, actor=current_user, action="cultura.pulse_fechado",
+          detail=f"Inquérito-pulso '{survey.title}' fechado.")
     db.commit()
     db.refresh(survey)
     return _to_out(survey)
