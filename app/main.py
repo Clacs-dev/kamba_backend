@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import Base, engine
+from app.core.schema_migrations import ensure_schema_columns
 from app.api.routes import api_router
 
 # Importar os modelos garante que estão registados na Base ANTES de criar as
@@ -19,6 +20,9 @@ from app.models import company, user, employee_profile, dossier, evaluation, dis
 
 # Cria as tabelas em SQLite se ainda não existirem.
 Base.metadata.create_all(bind=engine)
+# Acrescenta colunas novas que os modelos ganharam depois de a BD ser criada
+# (create_all não altera tabelas existentes).
+ensure_schema_columns()
 
 app = FastAPI(
     title=settings.APP_NAME,
