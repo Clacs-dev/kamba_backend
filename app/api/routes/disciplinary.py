@@ -31,7 +31,8 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/disciplinary", tags=["disciplinary"])
 
-INSTRUCTOR_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+# Por decisão do cliente, todos os perfis podem instruir processos por enquanto.
+INSTRUCTOR_ROLES = tuple(UserRole)
 
 
 def _now():
@@ -195,6 +196,11 @@ def submit_defense(
     _require_phase(p, DisciplinaryPhase.DEFESA)
     if p.accused_id != current_user.id:
         raise HTTPException(status_code=403, detail="Só o arguido pode submeter a defesa.")
+    if p.defense_deadline and _now().date() > p.defense_deadline:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="O prazo de defesa (10 dias úteis) já terminou.",
+        )
 
     p.defense_text = payload.defense_text
     p.defense_submitted_at = _now()

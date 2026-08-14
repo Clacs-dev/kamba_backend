@@ -42,6 +42,10 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    # --- Catálogo CLACS Academy (secção 5) ---
+    # URL público do catálogo; se vazio, a UI mostra que falta configurar.
+    CLACS_ACADEMY_URL: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

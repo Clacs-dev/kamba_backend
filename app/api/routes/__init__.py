@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     auth, collaborators, profiles, dossier, evaluation, disciplinary,
-    training, survey, notification, occupational, compensation, career,
+    training, development, survey, notification, occupational, compensation, career,
     dashboard, report, audit, onboarding, evaluation_settings, ficha_correction, leave, admin,
 )
 
@@ -17,6 +17,7 @@ api_router.include_router(dossier.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(disciplinary.router)
 api_router.include_router(training.router)
+api_router.include_router(development.router)
 api_router.include_router(survey.router)
 api_router.include_router(notification.router)
 api_router.include_router(occupational.router)

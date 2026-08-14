@@ -40,9 +40,29 @@ class ActionOut(BaseModel):
 
 
 class TrainingNeed(BaseModel):
-    """Necessidade detetada automaticamente pelo sistema (nota < 3,5)."""
+    """Necessidade detetada automaticamente pelo sistema.
+
+    Fonte 'avaliacao' (nota < 3,5) ou 'pid' (ação de desenvolvimento pendente).
+    """
     collaborator_id: int
     collaborator_name: str
-    last_score: float
-    classification: str | None
+    last_score: float | None = None
+    classification: str | None = None
     reason: str
+    source: str = "avaliacao"
+
+
+class ActionStatusUpdate(BaseModel):
+    status: TrainingActionStatus
+
+
+class MyTrainingActionOut(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str
+    title: str
+    description: str | None
+    source: TrainingSource
+    status: TrainingActionStatus
+    created_at: datetime
+    model_config = {"from_attributes": True}

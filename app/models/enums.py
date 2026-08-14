@@ -105,6 +105,18 @@ class TrainingActionStatus(str, enum.Enum):
     CONCLUIDA = "concluida"
 
 
+class DevelopmentPlanStatus(str, enum.Enum):
+    """Estado do Plano Individual de Desenvolvimento (secção 5)."""
+    ABERTO = "aberto"
+    CONCLUIDO = "concluido"
+
+
+class DevelopmentActionStatus(str, enum.Enum):
+    """Estado de cada ação de desenvolvimento do PID."""
+    PENDENTE = "pendente"
+    CONCLUIDA = "concluida"
+
+
 class SurveyStatus(str, enum.Enum):
     """Estado de um inquérito-pulso (secção 6)."""
     ABERTO = "aberto"
