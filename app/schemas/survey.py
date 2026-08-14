@@ -39,3 +39,8 @@ class SurveyResults(BaseModel):
     released: bool
     results: dict[str, float]  # dimensão -> média (só se released)
     note: str
+    # Participação (calculada a partir das participações registadas e do
+    # universo de colaboradores ativos) — secção 6.
+    participation_count: int = 0
+    universe: int = 0
+    participation_rate: float | None = None

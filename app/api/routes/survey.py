@@ -146,6 +146,7 @@ def get_results(
 ):
     """
     Resultados agregados. Só revelados com >= 5 respostas (anonimato).
+    Calcula ainda a participação: universo (colaboradores ativos) e taxa.
     """
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
 
@@ -156,6 +157,22 @@ def get_results(
     )
     count = len(responses)
 
+    # Participação (secção 6): universo de colaboradores ativos, participações
+    # registadas e taxa — calculados, não preenchidos à mão.
+    universe = (
+        db.query(User)
+        .filter(User.company_id == current_user.company_id, User.is_active.is_(True))
+        .count()
+    )
+    participation_count = (
+        db.query(SurveyParticipation)
+        .filter(SurveyParticipation.survey_id == survey.id)
+        .count()
+    )
+    participation_rate = (
+        round(participation_count * 100 / universe, 1) if universe else None
+    )
+
     if count < MIN_RESPONSES:
         return SurveyResults(
             survey_id=survey.id,
@@ -163,6 +180,9 @@ def get_results(
             released=False,
             results={},
             note=f"Resultados ocultados: são necessárias pelo menos {MIN_RESPONSES} respostas para proteger o anonimato.",
+            participation_count=participation_count,
+            universe=universe,
+            participation_rate=participation_rate,
         )
 
     # Agregar médias por dimensão.
@@ -186,6 +206,9 @@ def get_results(
         released=True,
         results=results,
         note="Resultados agregados.",
+        participation_count=participation_count,
+        universe=universe,
+        participation_rate=participation_rate,
     )
 
 
