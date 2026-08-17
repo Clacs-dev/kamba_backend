@@ -25,7 +25,7 @@ from app.schemas.collaborator import (
     CollaboratorOut,
     CollaboratorCreatedOut,
 )
-from app.api.deps import require_roles
+from app.api.deps import require_roles, get_current_user
 
 router = APIRouter(prefix="/collaborators", tags=["collaborators"])
 
@@ -212,6 +212,22 @@ def _doc_out(d: CollaboratorDocument) -> dict:
         "file_url": d.file_url,
         "uploaded_at": d.uploaded_at.isoformat(),
     }
+@router.get("/me/documents")
+def my_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """O próprio colaborador vê os seus documentos (BI, contrato, certificados)."""
+    rows = (
+        db.query(CollaboratorDocument)
+        .filter(
+            CollaboratorDocument.company_id == current_user.company_id,
+            CollaboratorDocument.collaborator_id == current_user.id,
+        )
+        .order_by(CollaboratorDocument.id.desc())
+        .all()
+    )
+    return [_doc_out(d) for d in rows]
 
 
 @router.post("/{collaborator_id}/documents", status_code=201)

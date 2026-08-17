@@ -8,7 +8,8 @@ para o URL) — o pedido é criado na mesma, só sem o ficheiro guardado.
 """
 import os
 from typing import Optional
-
+from dotenv import load_dotenv
+load_dotenv()
 _configured = False
 
 
@@ -45,6 +46,7 @@ def upload_file(file_bytes: bytes, filename: str, folder: str = "kamba") -> Opti
             unique_filename=True,
         )
         return result.get("secure_url")
-    except Exception:
+    except Exception as e:
         # Não deixamos uma falha de upload impedir a criação do pedido.
+        print(f"[CLOUDINARY] Falha no upload: {e}")
         return None
