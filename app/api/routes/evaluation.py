@@ -207,6 +207,80 @@ def list_evaluations(
 
     return query.order_by(Evaluation.id.desc()).all()
 
+@router.get("/history")
+def evaluations_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)),
+):
+    """Histórico consolidado dos últimos ciclos (até 3 anos)."""
+    from collections import defaultdict
+    from app.models.employee_profile import EmployeeProfile
+    from app.models.company import Company
+
+    company_id = current_user.company_id
+    company = db.query(Company).filter(Company.id == company_id).first()
+
+    ciclos = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.company_id == company_id)
+        .order_by(EvaluationCycle.id.desc())
+        .limit(3)
+        .all()
+    )
+    ciclos = list(reversed(ciclos))
+
+    resultado = []
+    for cycle in ciclos:
+        evals = (
+            db.query(Evaluation)
+            .filter(
+                Evaluation.company_id == company_id,
+                Evaluation.cycle_id == cycle.id,
+                Evaluation.phase == EvaluationPhase.VALIDADA,
+                Evaluation.final_score.isnot(None),
+            )
+            .all()
+        )
+        scores = [e.final_score for e in evals]
+        global_avg = round(sum(scores) / len(scores), 2) if scores else None
+
+        dist: dict[str, int] = defaultdict(int)
+        for e in evals:
+            dist[e.classification or "Sem nível"] += 1
+        distribution = [{"level": k, "count": v} for k, v in dist.items()]
+
+        dep_scores: dict[str, list[float]] = defaultdict(list)
+        for e in evals:
+            profile = (
+                db.query(EmployeeProfile)
+                .filter(EmployeeProfile.user_id == e.collaborator_id)
+                .first()
+            )
+            dep = profile.department if profile and profile.department else None
+            dep_scores[dep or "Sem direção"].append(e.final_score)
+        by_direction = [
+            {
+                "department": dep if dep != "Sem direção" else None,
+                "average": round(sum(s) / len(s), 2) if s else None,
+                "count": len(s),
+            }
+            for dep, s in dep_scores.items()
+        ]
+
+        resultado.append({
+            "cycle_id": cycle.id,
+            "cycle_name": cycle.name,
+            "global_average": global_avg,
+            "evaluated_count": len(evals),
+            "distribution": distribution,
+            "by_direction": by_direction,
+        })
+
+    return {
+        "company_name": company.name if company else "",
+        "cycles": resultado,
+    }
+
 
 @router.get("/{evaluation_id}", response_model=EvaluationOut)
 def get_evaluation(

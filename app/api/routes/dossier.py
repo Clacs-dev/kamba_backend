@@ -108,6 +108,26 @@ def read_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
 
+    return doc
+
+
+@router.post("/documents/{document_id}/register-read", status_code=status.HTTP_201_CREATED)
+def register_read(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Regista a leitura de um documento (ato explícito do colaborador —
+    botão 'Registar leitura'). É a prova de comunicação da norma (secção 2.4),
+    com carimbo temporal. A primeira leitura fica registada; releituras não duplicam."""
+    doc = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.company_id == current_user.company_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
     existing = (
         db.query(DocumentRead)
         .filter(DocumentRead.document_id == doc.id, DocumentRead.user_id == current_user.id)
@@ -119,9 +139,15 @@ def read_document(
             document_id=doc.id,
             user_id=current_user.id,
         ))
+        audit(db, actor=current_user, action="documento.leitura_registada",
+              detail=f"Leitura registada do documento '{doc.title}'.")
         db.commit()
 
-    return doc
+    return {"registado": True, "document_id": doc.id}
+
+
+
+
 
 
 @router.get("/documents/{document_id}/reads", response_model=list[DocumentReadReceipt])
@@ -189,3 +215,59 @@ def my_signatures(
         .order_by(Signature.signed_at)
         .all()
     )
+
+
+@router.get("/collaborators/{collaborator_id}/signatures", response_model=list[SignatureOut])
+def collaborator_signatures(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """O Capital Humano/Administração vê as assinaturas de um colaborador
+    (quais das três declarações assinou e com que data/hora — o carimbo
+    temporal que sustenta juridicamente a adesão)."""
+    alvo = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if not alvo:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+    return (
+        db.query(Signature)
+        .filter(Signature.user_id == collaborator_id)
+        .order_by(Signature.signed_at)
+        .all()
+    )
+
+
+@router.get("/collaborators/{collaborator_id}/document-reads")
+def collaborator_document_reads(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """O CH/Administração vê que documentos um colaborador já leu."""
+    alvo = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if not alvo:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+    linhas = (
+        db.query(DocumentRead, Document)
+        .join(Document, DocumentRead.document_id == Document.id)
+        .filter(DocumentRead.user_id == collaborator_id)
+        .order_by(DocumentRead.read_at.desc())
+        .all()
+    )
+    return [
+        {
+            "document_id": doc.id,
+            "title": doc.title,
+            "doc_type": doc.doc_type.value if hasattr(doc.doc_type, "value") else doc.doc_type,
+            "read_at": rd.read_at.isoformat(),
+        }
+        for rd, doc in linhas
+    ]
