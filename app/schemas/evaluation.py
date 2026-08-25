@@ -2,7 +2,7 @@
 Schemas Pydantic — ciclo de avaliação (secção 3).
 """
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.enums import EvaluationPhase, EvaluationCategory
 
@@ -24,11 +24,18 @@ class CycleOut(BaseModel):
 
 # --- Avaliação: criação ---
 
+class DefinedObjective(BaseModel):
+    """Objetivo pactuado, definido pelo Capital Humano no início do ciclo."""
+    description: str = Field(..., min_length=2, max_length=300)
+    weight: float = Field(..., ge=0, le=100)
+
+
 class EvaluationCreate(BaseModel):
     cycle_id: int
     collaborator_id: int
     director_id: int
     category: EvaluationCategory = EvaluationCategory.TECNICO
+    objectives: list[DefinedObjective] = []
 
 
 # --- Respostas do formulário (blocos do 3.2) ---
@@ -71,9 +78,24 @@ class EvaluationOut(BaseModel):
     appeal_deadline: datetime | None = None
     cycle_adjusted: bool = False
     commission_decision: str | None
+    objectives: list[DefinedObjective] = Field(default=[], validation_alias="defined_objectives")
     created_at: datetime
     updated_at: datetime
-    model_config = {"from_attributes": True}
+
+    @field_validator("objectives", mode="before")
+    @classmethod
+    def _parse_objectives(cls, v):
+        if v is None or v == []:
+            return []
+        if isinstance(v, str):
+            import json as _json
+            try:
+                return _json.loads(v)
+            except Exception:
+                return []
+        return v
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
     @computed_field
     @property

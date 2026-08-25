@@ -90,6 +90,23 @@ def create_collaborator(
     db.commit()
     db.refresh(collaborator)
 
+
+        # Envia o email de boas-vindas com as credenciais (email centralizado da KAMBA).
+    # Se o email não estiver configurado, o cadastro decorre à mesma.
+    try:
+        from app.services.email_service import email_boas_vindas
+        from app.models.company import Company
+        empresa = db.query(Company).filter(Company.id == company_id).first()
+        email_boas_vindas(
+            nome=collaborator.full_name,
+            email=collaborator.email,
+            senha_temporaria=temp_password,
+            empresa=empresa.name if empresa else "",
+        )
+    except Exception as e:
+        print(f"[EMAIL] Não foi possível enviar boas-vindas: {e}")
+    
+    
     return CollaboratorCreatedOut(
         id=collaborator.id,
         full_name=collaborator.full_name,

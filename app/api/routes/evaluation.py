@@ -136,6 +136,24 @@ def create_evaluation(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
 
+    
+    # Integridade: ninguém se avalia a si próprio.
+    if payload.collaborator_id == payload.director_id:
+        raise HTTPException(
+            status_code=400,
+            detail="O colaborador avaliado e o avaliador têm de ser pessoas diferentes.",
+        )
+
+    # Hierarquia: o Capital Humano só pode ser avaliado pela Administração.
+    avaliado = db.query(User).filter(User.id == payload.collaborator_id).first()
+    avaliador = db.query(User).filter(User.id == payload.director_id).first()
+    if avaliado and avaliado.role == UserRole.CAPITAL_HUMANO:
+        if not avaliador or avaliador.role != UserRole.ADMINISTRACAO:
+            raise HTTPException(
+                status_code=400,
+                detail="O Capital Humano só pode ser avaliado pela Administração.",
+            )
+
     for uid, label in [(payload.collaborator_id, "Colaborador"), (payload.director_id, "Director")]:
         u = db.query(User).filter(User.id == uid, User.company_id == company_id).first()
         if u is None:
@@ -163,6 +181,9 @@ def create_evaluation(
         category=payload.category,
         phase=EvaluationPhase.AUTOAVALIACAO,
         cycle_adjusted=tem_maternidade,
+        defined_objectives=json.dumps(
+            [o.model_dump() for o in payload.objectives]
+        ) if payload.objectives else None,
     )
     db.add(ev)
     db.commit()

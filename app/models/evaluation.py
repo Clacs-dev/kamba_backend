@@ -78,6 +78,9 @@ class Evaluation(Base):
     # Ciclo ajustado por licença (ex.: maternidade) — visível a quem avalia.
     cycle_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
     commission_decision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # Objetivos "pactuados" definidos pelo Capital Humano no início (JSON).
+    defined_objectives: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(

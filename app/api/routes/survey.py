@@ -26,6 +26,8 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/surveys", tags=["culture"])
 
+# Criação/fecho de pulses: Capital Humano e Administração, mais o Director.
+SURVEY_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
 MIN_RESPONSES = 5  # limiar de anonimato (secção 6)
 
@@ -52,7 +54,7 @@ def _to_out(s: Survey) -> SurveyOut:
 def create_survey(
     payload: SurveyCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+    current_user: User = Depends(require_roles(*SURVEY_ROLES)),
 ):
     survey = Survey(
         company_id=current_user.company_id,
@@ -132,7 +134,7 @@ def respond(
 def close_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+    current_user: User = Depends(require_roles(*SURVEY_ROLES)),
 ):
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
     survey.status = SurveyStatus.FECHADO
