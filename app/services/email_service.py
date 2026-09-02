@@ -45,7 +45,7 @@ def enviar_email(destinatario: str, assunto: str, corpo_html: str) -> bool:
 
 
 def email_boas_vindas(nome: str, email: str, senha_temporaria: str, empresa: str = "") -> bool:
-    empresa_txt = f" da {empresa}" if empresa else ""
+    empresa_txt = f" da empresa {empresa}" if empresa else ""
     corpo = f"""
     <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; color: #1a1a1a;">
       <div style="background: #1a5f4a; padding: 20px; border-radius: 8px 8px 0 0;">

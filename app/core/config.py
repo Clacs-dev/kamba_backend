@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # URL público do catálogo; se vazio, a UI mostra que falta configurar.
     CLACS_ACADEMY_URL: str | None = None
 
+    # --- Google Gemini (IA) ---
+    GEMINI_API_KEY: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

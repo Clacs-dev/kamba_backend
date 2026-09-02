@@ -21,7 +21,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/ficha-corrections", tags=["ficha-corrections"])
 
-MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 class CorrectionIn(BaseModel):
@@ -98,6 +98,7 @@ def list_corrections(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE)),
     status: str | None = None,
+    collaborator_id: int | None = None,
 ):
     """O Capital Humano vê todos os pedidos da empresa (opcionalmente filtra por estado)."""
     q = db.query(FichaCorrectionRequest).filter(
@@ -105,6 +106,8 @@ def list_corrections(
     )
     if status:
         q = q.filter(FichaCorrectionRequest.status == status)
+    if collaborator_id is not None:
+        q = q.filter(FichaCorrectionRequest.collaborator_id == collaborator_id)
     return q.order_by(FichaCorrectionRequest.id.desc()).all()
 
 

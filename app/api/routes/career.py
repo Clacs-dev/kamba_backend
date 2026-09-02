@@ -34,7 +34,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/career", tags=["career"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 def _can_view(current_user: User, collaborator_id: int) -> bool:

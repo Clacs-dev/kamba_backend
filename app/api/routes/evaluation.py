@@ -23,7 +23,7 @@ from app.models.enums import UserRole, EvaluationPhase
 from app.models.evaluation import EvaluationCycle, Evaluation
 from app.schemas.evaluation import (
     CycleCreate, CycleOut, EvaluationCreate, EvaluationOut,
-    FormAnswers, AppealRequest, CommissionDecisionRequest,
+    FormAnswers, AppealRequest, CommissionDecisionRequest, DirectionCreate,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.evaluation_scoring import compute_score
@@ -44,7 +44,7 @@ def _add_business_days(start: datetime, days: int) -> datetime:
             added += 1
     return d
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 def _notify_evaluation(db: Session, ev, title: str, message: str,
@@ -199,7 +199,96 @@ def create_evaluation(
     return ev
 
 
-@router.get("", response_model=list[EvaluationOut])
+@router.post("/by-direction", response_model=list[EvaluationOut], status_code=status.HTTP_201_CREATED)
+def create_evaluations_by_direction(
+    payload: DirectionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Cria UMA avaliação para cada colaborador da direção escolhida (department
+    da ficha). O Capital Humano escolhe o ciclo, a direção e o director
+    avaliador; o sistema abre uma autoavaliação para todos os membros dessa
+    direção que ainda não têm avaliação no ciclo.
+    """
+    from app.models.employee_profile import EmployeeProfile
+
+    company_id = current_user.company_id
+    department = (payload.department or "").strip()
+    if not department:
+        raise HTTPException(status_code=400, detail="Indique a direção para criar as avaliações.")
+
+    cycle = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.id == payload.cycle_id, EvaluationCycle.company_id == company_id)
+        .first()
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+
+    director = (
+        db.query(User)
+        .filter(User.id == payload.director_id, User.company_id == company_id)
+        .first()
+    )
+    if director is None:
+        raise HTTPException(status_code=404, detail="Director não encontrado nesta empresa.")
+
+    # Membros da direção: utilizadores com ficha cujo department corresponde.
+    membros = (
+        db.query(User)
+        .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
+        .filter(
+            User.company_id == company_id,
+            EmployeeProfile.department == department,
+        )
+        .all()
+    )
+    if not membros:
+        raise HTTPException(status_code=404, detail="Não há colaboradores nesta direção.")
+
+    objectives_json = (
+        json.dumps([o.model_dump() for o in payload.objectives])
+        if payload.objectives else None
+    )
+
+    criadas = []
+    for m in membros:
+        if m.id == payload.director_id:
+            continue  # o próprio director não é avaliado por si (integridade)
+        ja_existe = (
+            db.query(Evaluation)
+            .filter(
+                Evaluation.company_id == company_id,
+                Evaluation.cycle_id == payload.cycle_id,
+                Evaluation.collaborator_id == m.id,
+            )
+            .first()
+        )
+        if ja_existe is not None:
+            continue  # não duplica no mesmo ciclo
+        ev = Evaluation(
+            company_id=company_id,
+            cycle_id=payload.cycle_id,
+            collaborator_id=m.id,
+            director_id=payload.director_id,
+            category=payload.category,
+            phase=EvaluationPhase.AUTOAVALIACAO,
+            defined_objectives=objectives_json,
+        )
+        db.add(ev)
+        criadas.append(ev)
+        notify(
+            db, company_id=company_id, user_id=m.id,
+            title="Autoavaliação disponível",
+            message="Foi iniciada a sua avaliação de desempenho. Preencha a sua autoavaliação.",
+            category="avaliacao", link=f"/evaluations/{ev.id}",
+        )
+
+    db.commit()
+    for ev in criadas:
+        db.refresh(ev)
+    return criadas
 def list_evaluations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

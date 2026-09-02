@@ -21,7 +21,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-ADMIN_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+ADMIN_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 # Planos de subscrição disponíveis (secção 10 do manual).
 PLANOS_VALIDOS = {"essencial", "empresarial", "corporativo", "institucional"}

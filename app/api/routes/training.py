@@ -36,7 +36,7 @@ from app.services.audit import audit
 router = APIRouter(prefix="/training", tags=["training"])
 
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)
-CH_ADMIN = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+CH_ADMIN = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 SCORE_THRESHOLD = 3.5  # abaixo disto, o sistema sinaliza necessidade (secção 5)
 
@@ -348,16 +348,26 @@ def update_action_status(
 
 @router.get("/my-actions", response_model=list[MyTrainingActionOut])
 def my_actions(
+    collaborator_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """As ações de formação do próprio colaborador, para acompanhar no portal."""
+    """Ações de formação do próprio colaborador (portal) ou de outro (CH/Admin).
+
+    Quando `collaborator_id` é fornecido e o utilizador tem perfil CH/Admin,
+    devolve as ações desse colaborador; caso contrário, as do próprio.
+    """
+    if collaborator_id is not None and current_user.role in CH_ADMIN:
+        target_id = collaborator_id
+    else:
+        target_id = current_user.id
+
     rows = (
         db.query(TrainingAction, TrainingPlan)
         .join(TrainingPlan, TrainingPlan.id == TrainingAction.plan_id)
         .filter(
             TrainingAction.company_id == current_user.company_id,
-            TrainingAction.collaborator_id == current_user.id,
+            TrainingAction.collaborator_id == target_id,
         )
         .order_by(TrainingAction.created_at.desc())
         .all()

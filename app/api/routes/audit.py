@@ -50,7 +50,7 @@ def _query_rows(db: Session, company_id: int, limit: int):
 @router.get("", response_model=list[AuditEventOut])
 def list_audit(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO, UserRole.CAPITAL_HUMANO)),
+    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO, UserRole.CAPITAL_HUMANO, UserRole.ADMIN)),
     limit: int = Query(default=100, le=500),
 ):
     """A Administração e o Capital Humano consultam a trilha de auditoria da empresa (mais recentes primeiro)."""
@@ -60,7 +60,7 @@ def list_audit(
 @router.get("/export")
 def export_audit(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO, UserRole.CAPITAL_HUMANO)),
+    current_user: User = Depends(require_roles(UserRole.ADMINISTRACAO, UserRole.CAPITAL_HUMANO, UserRole.ADMIN)),
     formato: str = Query(default="csv", pattern="^(csv|pdf)$"),
     limit: int = Query(default=500, le=5000),
 ):

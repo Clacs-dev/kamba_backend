@@ -18,12 +18,19 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
-MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 class ItemIn(BaseModel):
     collaborator_id: int
     description: str = Field(..., min_length=2, max_length=200)
+    applicable: bool | None = None
+    delivered: bool | None = None
+
+
+class ItemPatch(BaseModel):
+    applicable: bool | None = None
+    delivered: bool | None = None
 
 
 class ItemOut(BaseModel):
@@ -31,6 +38,8 @@ class ItemOut(BaseModel):
     collaborator_id: int
     description: str
     done: bool
+    applicable: bool | None = None
+    delivered: bool | None = None
     model_config = {"from_attributes": True}
 
 
@@ -76,6 +85,8 @@ def create_item(
         company_id=current_user.company_id,
         collaborator_id=payload.collaborator_id,
         description=payload.description,
+        applicable=payload.applicable,
+        delivered=payload.delivered,
     )
     db.add(item)
     audit(db, actor=current_user, action="acolhimento.item_criado",
@@ -97,6 +108,25 @@ def toggle_item(
     audit(db, actor=current_user, action="acolhimento.item_alternado",
           detail=f"Item de acolhimento #{item.id} marcado como "
                  f"{'concluído' if item.done else 'pendente'}.")
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/{item_id}", response_model=ItemOut)
+def patch_item(
+    item_id: int,
+    payload: ItemPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE)),
+):
+    """Atualiza aplicável/entregue (S/N) de um item de acolhimento."""
+    item = _get_item(db, current_user.company_id, item_id)
+    dados = payload.model_dump(exclude_unset=True)
+    for campo, valor in dados.items():
+        setattr(item, campo, valor)
+    audit(db, actor=current_user, action="acolhimento.item_atualizado",
+          detail=f"Item de acolhimento #{item.id} atualizado.")
     db.commit()
     db.refresh(item)
     return item

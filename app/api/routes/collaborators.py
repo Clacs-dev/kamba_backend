@@ -10,6 +10,7 @@ Permissões: criar, editar e desativar são reservados a Capital Humano e
 Administração. Listar e ver são permitidos a esses mesmos perfis (os
 colaboradores comuns têm o seu próprio portal, tratado noutro módulo).
 """
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -24,13 +25,134 @@ from app.schemas.collaborator import (
     CollaboratorUpdate,
     CollaboratorOut,
     CollaboratorCreatedOut,
+    CollaboratorRowOut,
 )
 from app.api.deps import require_roles, get_current_user
 
 router = APIRouter(prefix="/collaborators", tags=["collaborators"])
 
 # Perfis com poder de gestão de pessoas.
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
+
+
+def _extrair_ano(nome: str) -> int | None:
+    """Extrai o ano (20XX) de um nome de ciclo, ex.: 'Avaliação 2025' -> 2025."""
+    m = re.search(r"(20\d{2})", nome or "")
+    return int(m.group(1)) if m else None
+
+
+def _enriquecer_colaboradores(db: Session, current_user: User, usuarios: list[User]) -> list[CollaboratorRowOut]:
+    """
+    Constrói as linhas da tabela de colaboradores (estrutura KAMBA):
+
+    - Ficha profissional: cargo, direção, ano de admissão, tags de situação.
+    - Notas por ano: final_score dos ciclos de avaliação validados da empresa.
+    - Situação: processo disciplinar em curso e/ou licença aprovada.
+    - Nome curto da empresa (ex.: 'NZILA Comércio...' -> 'NZILA').
+    """
+    from app.models.employee_profile import EmployeeProfile
+    from app.models.evaluation import Evaluation, EvaluationCycle, EvaluationPhase
+    from app.models.disciplinary import DisciplinaryProcess, DisciplinaryPhase
+    from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
+    from app.models.company import Company
+
+    company_id = current_user.company_id
+    if not usuarios:
+        return []
+
+    ids = [u.id for u in usuarios]
+
+    perfis = {
+        p.user_id: p
+        for p in (
+            db.query(EmployeeProfile)
+            .filter(EmployeeProfile.company_id == company_id, EmployeeProfile.user_id.in_(ids))
+            .all()
+        )
+    }
+
+    # Ciclos da empresa -> ano, e os 3 anos mais recentes a exibir.
+    ciclos = db.query(EvaluationCycle).filter(EvaluationCycle.company_id == company_id).all()
+    ciclo_ano = {c.id: _extrair_ano(c.name) for c in ciclos}
+    anos = sorted({a for a in ciclo_ano.values() if a is not None})
+    anos = anos[-3:] if anos else []
+
+    avaliacoes = (
+        db.query(Evaluation)
+        .filter(
+            Evaluation.company_id == company_id,
+            Evaluation.collaborator_id.in_(ids),
+            Evaluation.phase == EvaluationPhase.VALIDADA,
+            Evaluation.final_score.isnot(None),
+        )
+        .all()
+    )
+    scores_por_user: dict[int, dict[str, float]] = {}
+    for ev in avaliacoes:
+        ano = ciclo_ano.get(ev.cycle_id)
+        if ano is None:
+            continue
+        scores_por_user.setdefault(ev.collaborator_id, {})[str(ano)] = ev.final_score
+
+    # Processo disciplinar ativo (não arquivado) -> situação "preocupante".
+    disc_ids = {
+        r[0]
+        for r in db.query(DisciplinaryProcess.accused_id)
+        .filter(
+            DisciplinaryProcess.company_id == company_id,
+            DisciplinaryProcess.accused_id.in_(ids),
+            DisciplinaryProcess.phase != DisciplinaryPhase.ARQUIVADO,
+        )
+        .all()
+    }
+
+    # Licença aprovada (férias / maternidade / doença) -> situação "licença".
+    leave_ids = {
+        r[0]
+        for r in db.query(LeaveRequest.collaborator_id)
+        .filter(
+            LeaveRequest.company_id == company_id,
+            LeaveRequest.collaborator_id.in_(ids),
+            LeaveRequest.leave_type != LeaveType.FALTA,
+            LeaveRequest.status.in_((LeaveStatus.APROVADA, LeaveStatus.JUSTIFICADA)),
+        )
+        .all()
+    }
+
+    # Nome curto da empresa (primeira palavra).
+    empresa = db.query(Company).filter(Company.id == company_id).first()
+    company_short = None
+    if empresa and empresa.name:
+        tokens = [t for t in empresa.name.split() if re.search(r"[A-Za-zÀ-ÿ]", t)]
+        if tokens:
+            company_short = tokens[0].rstrip(",;.")
+
+    linhas = []
+    for u in usuarios:
+        p = perfis.get(u.id)
+        scores = {str(a): scores_por_user.get(u.id, {}).get(str(a)) for a in anos}
+        linhas.append(
+            CollaboratorRowOut(
+                id=u.id,
+                company_id=u.company_id,
+                email=u.email,
+                full_name=u.full_name,
+                role=u.role,
+                is_active=u.is_active,
+                created_at=u.created_at,
+                job_title=p.job_title if p else None,
+                job_category=p.job_category if p else None,
+                department=p.department if p else None,
+                admission_year=str(p.admission_date.year) if p and p.admission_date else None,
+                situation_tags=p.situation_tags if p else None,
+                score_years=anos,
+                scores=scores,
+                has_disciplinary=u.id in disc_ids,
+                has_leave=u.id in leave_ids,
+                company_short=company_short,
+            )
+        )
+    return linhas
 
 
 def _get_company_user_or_404(db: Session, company_id: int, user_id: int) -> User:
@@ -64,6 +186,18 @@ def create_collaborator(
     """
     company_id = current_user.company_id
 
+    # Controlo de perfis: o Capital Humano só pode criar colaboradores comuns.
+    # Atribuir perfis privilegiados é competência do Admin da empresa.
+    perfis_privilegiados = (
+        UserRole.DIRECTOR, UserRole.CAPITAL_HUMANO, UserRole.COMISSAO_AVALIACAO,
+        UserRole.ADMINISTRACAO, UserRole.ADMIN, UserRole.SUPERADMIN,
+    )
+    if payload.role in perfis_privilegiados and current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Apenas o Admin da empresa pode atribuir este perfil. O Capital Humano cria colaboradores.",
+        )
+
     # Email único dentro da empresa.
     exists = (
         db.query(User)
@@ -89,6 +223,45 @@ def create_collaborator(
     db.add(collaborator)
     db.commit()
     db.refresh(collaborator)
+
+        # Atribui automaticamente o número de colaborador (sequencial, 4 dígitos).
+    try:
+        from app.models.employee_profile import EmployeeProfile
+        existentes = (
+            db.query(EmployeeProfile.employee_number)
+            .filter(
+                EmployeeProfile.company_id == company_id,
+                EmployeeProfile.employee_number.isnot(None),
+            )
+            .all()
+        )
+        maior = 0
+        for (num,) in existentes:
+            try:
+                n = int(str(num).lstrip("0") or "0")
+                if n > maior:
+                    maior = n
+            except (ValueError, TypeError):
+                continue
+        novo_numero = f"{maior + 1:04d}"
+        perfil = (
+            db.query(EmployeeProfile)
+            .filter(EmployeeProfile.user_id == collaborator.id)
+            .first()
+        )
+        if perfil is None:
+            perfil = EmployeeProfile(
+                company_id=company_id,
+                user_id=collaborator.id,
+                employee_number=novo_numero,
+            )
+            db.add(perfil)
+        elif not perfil.employee_number:
+            perfil.employee_number = novo_numero
+        db.commit()
+    except Exception as e:
+        print(f"[NUM] Não foi possível gerar o número de colaborador: {e}")
+        db.rollback()
 
 
         # Envia o email de boas-vindas com as credenciais (email centralizado da KAMBA).
@@ -117,7 +290,7 @@ def create_collaborator(
     )
 
 
-@router.get("", response_model=list[CollaboratorOut])
+@router.get("", response_model=list[CollaboratorRowOut])
 def list_collaborators(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
@@ -138,7 +311,53 @@ def list_collaborators(
             (User.full_name.ilike(like)) | (User.email.ilike(like))
         )
 
-    return query.order_by(User.full_name).all()
+    usuarios = query.order_by(User.full_name).all()
+    return _enriquecer_colaboradores(db, current_user, usuarios)
+
+
+@router.get("/my-direction", response_model=list[CollaboratorRowOut])
+def list_my_direction_collaborators(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.DIRECTOR)),
+):
+    """
+    Lista os colaboradores da direção que o director gere.
+
+    A direção do director vem da sua ficha (profile.department). Devolve os
+    utilizadores da mesma empresa cuja ficha tem essa mesma direção,
+    excluindo perfis de gestão (outros directores/CH/administração) — a equipa
+    que o director avalia e acompanha.
+    """
+    from app.models.employee_profile import EmployeeProfile
+
+    company_id = current_user.company_id
+    perfil_director = (
+        db.query(EmployeeProfile)
+        .filter(EmployeeProfile.user_id == current_user.id)
+        .first()
+    )
+    direcao = perfil_director.department if perfil_director else None
+    if not direcao:
+        # Sem direção atribuída na ficha: devolve vazio.
+        return []
+
+    excluidos = (
+        UserRole.DIRECTOR, UserRole.CAPITAL_HUMANO,
+        UserRole.COMISSAO_AVALIACAO, UserRole.ADMINISTRACAO,
+        UserRole.ADMIN, UserRole.SUPERADMIN,
+    )
+    usuarios = (
+        db.query(User)
+        .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
+        .filter(
+            User.company_id == company_id,
+            EmployeeProfile.department == direcao,
+            User.role.notin_(excluidos),
+        )
+        .order_by(User.full_name)
+        .all()
+    )
+    return _enriquecer_colaboradores(db, current_user, usuarios)
 
 
 @router.get("/{collaborator_id}", response_model=CollaboratorOut)
@@ -251,7 +470,7 @@ def my_documents(
 async def upload_collaborator_document(
     collaborator_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)),
     file: UploadFile = File(...),
     doc_type: str = Form(...),
 ):
@@ -277,7 +496,7 @@ async def upload_collaborator_document(
 def list_collaborator_documents(
     collaborator_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)),
 ):
     """Lista os documentos anexados a um colaborador."""
     rows = (
@@ -297,7 +516,7 @@ def delete_collaborator_document(
     collaborator_id: int,
     doc_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)),
 ):
     """Remove um documento anexado."""
     d = (
@@ -329,7 +548,7 @@ def change_role(
     collaborator_id: int,
     payload: RoleUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
 ):
     """
     Altera o perfil (role) de um colaborador. Reservado a Capital Humano e

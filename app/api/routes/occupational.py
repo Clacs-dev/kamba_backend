@@ -22,7 +22,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/occupational-health", tags=["occupational_health"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 @router.post("/exams", response_model=ExamOut, status_code=status.HTTP_201_CREATED)

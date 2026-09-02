@@ -29,4 +29,6 @@ class OnboardingItem(Base):
     )
     description: Mapped[str] = mapped_column(String(200), nullable=False)
     done: Mapped[bool] = mapped_column(Boolean, default=False)
+    applicable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # aplicável ao colaborador? (S/N)
+    delivered: Mapped[bool | None] = mapped_column(Boolean, nullable=True)   # já foi entregue? (S/N)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

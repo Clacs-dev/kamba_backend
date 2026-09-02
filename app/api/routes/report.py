@@ -26,7 +26,7 @@ from app.api.deps import require_roles
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 SCORE_THRESHOLD = 3.5
 
 

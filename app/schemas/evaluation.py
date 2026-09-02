@@ -36,6 +36,16 @@ class EvaluationCreate(BaseModel):
     director_id: int
     category: EvaluationCategory = EvaluationCategory.TECNICO
     objectives: list[DefinedObjective] = []
+    department: str | None = None  # se preenchido, cria para TODA a direção
+
+
+class DirectionCreate(BaseModel):
+    """Cria uma avaliação para TODOS os colaboradores de uma direção."""
+    cycle_id: int
+    director_id: int
+    department: str
+    category: EvaluationCategory = EvaluationCategory.TECNICO
+    objectives: list[DefinedObjective] = []
 
 
 # --- Respostas do formulário (blocos do 3.2) ---

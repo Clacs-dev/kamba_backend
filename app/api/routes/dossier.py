@@ -25,7 +25,7 @@ from app.services.audit import audit
 
 router = APIRouter(tags=["dossier"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 # ---------- Documentos: gestão (CH) ----------

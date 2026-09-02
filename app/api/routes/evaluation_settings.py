@@ -18,7 +18,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/evaluation-settings", tags=["evaluation-settings"])
 
-MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 class SettingsOut(BaseModel):

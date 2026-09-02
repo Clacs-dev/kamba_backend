@@ -21,7 +21,7 @@ from app.api.deps import get_current_user, require_roles
 
 router = APIRouter(prefix="/compensation", tags=["compensation"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 def _can_view(current_user: User, collaborator_id: int) -> bool:

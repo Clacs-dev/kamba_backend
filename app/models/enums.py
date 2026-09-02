@@ -20,7 +20,7 @@ class UserRole(str, enum.Enum):
     # Perfil técnico, fora dos cinco do manual: o operador da CLACS que gere
     # várias empresas (o "selector de empresa" da secção 1.2). Opcional.
     SUPERADMIN = "superadmin"
-
+    ADMIN = "admin"
 
 class ContractType(str, enum.Enum):
     """Tipo de vínculo laboral (secção 2.1 do manual)."""

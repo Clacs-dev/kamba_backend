@@ -29,7 +29,7 @@ from app.services.cloudinary_upload import upload_file
 router = APIRouter(prefix="/leave", tags=["leave"])
 
 ANNUAL = 22  # dias de férias por ano
-CH_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+CH_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 def _count_days(a: date, b: date) -> int:

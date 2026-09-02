@@ -28,7 +28,7 @@ router = APIRouter(prefix="/surveys", tags=["culture"])
 
 # Criação/fecho de pulses: Capital Humano e Administração, mais o Director.
 SURVEY_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 MIN_RESPONSES = 5  # limiar de anonimato (secção 6)
 
 
@@ -265,7 +265,7 @@ def get_culture_report(
 def put_culture_report(
     payload: CultureReportIn,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO)),
+    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)),
 ):
     """O Capital Humano/Administração edita o relatório de cultura da empresa."""
     r = (

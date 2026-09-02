@@ -23,7 +23,7 @@ from app.services.audit import audit
 
 router = APIRouter(prefix="/development-plans", tags=["development"])
 
-MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)
+MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR, UserRole.ADMIN)
 
 
 def _get_plan_or_404(db: Session, company_id: int, plan_id: int) -> DevelopmentPlan:
@@ -91,13 +91,16 @@ def create_plan(
 
 @router.get("", response_model=list[DevelopmentPlanOut])
 def list_plans(
+    collaborator_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(DevelopmentPlan).filter(
         DevelopmentPlan.company_id == current_user.company_id
     )
-    if current_user.role not in MANAGE_ROLES:
+    if collaborator_id is not None and current_user.role in MANAGE_ROLES:
+        query = query.filter(DevelopmentPlan.collaborator_id == collaborator_id)
+    elif current_user.role not in MANAGE_ROLES:
         query = query.filter(DevelopmentPlan.collaborator_id == current_user.id)
     plans = query.order_by(DevelopmentPlan.created_at.desc()).all()
     return [_serialize(db, p) for p in plans]
