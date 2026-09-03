@@ -20,6 +20,7 @@ from app.models.enums import UserRole, SurveyStatus
 from app.models.survey import Survey, SurveyResponse, SurveyParticipation
 from app.schemas.survey import (
     SurveyCreate, SurveyOut, SurveyResponseSubmit, SurveyResults,
+    CultureDimensionsEvolution, DimensionEvolution, DimensionCyclePoint,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.audit import audit
@@ -145,6 +146,80 @@ def close_survey(
     return _to_out(survey)
 
 
+# ---------- Evolução das dimensões por ciclo (calculada das respostas) ----------
+
+@router.get("/culture-report/evolution", response_model=CultureDimensionsEvolution)
+def culture_evolution(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Evolução das dimensões de cultura através dos ciclos/pulses.
+    As % são calculadas automaticamente das respostas reais: para cada pulse,
+    média da dimensão na escala 1..5 normalizada em percentagem (media/5*100).
+    Devolve uma coluna por ciclo (do mais antigo ao mais recente).
+    Qualquer perfil da empresa pode consultar; o anonimato mantém-se porque só
+    se mostram médias agregadas.
+    """
+    company_id = current_user.company_id
+    surveys = (
+        db.query(Survey)
+        .filter(Survey.company_id == company_id)
+        .order_by(Survey.created_at.asc())
+        .all()
+    )
+
+    per_survey: list[dict[str, float]] = []
+    cycle_labels: list[str] = []
+    for s in surveys:
+        responses = (
+            db.query(SurveyResponse)
+            .filter(SurveyResponse.survey_id == s.id)
+            .all()
+        )
+        if not responses:
+            continue
+        dims_js = json.loads(s.dimensions)
+        totals = {d: 0 for d in dims_js}
+        counts = {d: 0 for d in dims_js}
+        for r in responses:
+            ans = json.loads(r.answers)
+            for d, v in ans.items():
+                if d in totals:
+                    totals[d] += v
+                    counts[d] += 1
+        pct = {}
+        for d in dims_js:
+            if counts[d] > 0:
+                media = totals[d] / counts[d]
+                pct[d] = round(media / 5 * 100, 1)
+        per_survey.append(pct)
+        cycle_labels.append(s.title)
+
+    if not cycle_labels:
+        return CultureDimensionsEvolution(dimensions=[], cycles=[])
+
+    all_dims: list[str] = []
+    for p in per_survey:
+        for d in p:
+            if d not in all_dims:
+                all_dims.append(d)
+
+    dimensions = []
+    for d in all_dims:
+        points = []
+        for i, p in enumerate(per_survey):
+            points.append(DimensionCyclePoint(
+                survey_id=0,
+                cycle_label=cycle_labels[i],
+                value=p.get(d, None),  # type: ignore[arg-type]
+            ))
+        latest = next((pt.value for pt in reversed(points) if pt.value is not None), None)
+        dimensions.append(DimensionEvolution(name=d, points=points, latest=latest))
+
+    return CultureDimensionsEvolution(dimensions=dimensions, cycles=cycle_labels)
+
+
 @router.get("/{survey_id}/results", response_model=SurveyResults)
 def get_results(
     survey_id: int,
@@ -220,7 +295,6 @@ def get_results(
 
 
 # ---------- Relatório de cultura (editado pelo Capital Humano) ----------
-
 import json as _json
 from app.models.culture_report import CultureReport
 from app.schemas.culture_report import CultureReportIn, CultureReportOut, DimensionRow

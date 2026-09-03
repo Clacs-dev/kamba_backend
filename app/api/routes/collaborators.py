@@ -586,3 +586,144 @@ def change_role(
         pass
 
     return CollaboratorOut.model_validate(collaborator)
+
+
+# ---------- CV em PDF ----------
+
+@router.get("/{collaborator_id}/cv-pdf")
+def gerar_cv_pdf(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """Gera o CV do colaborador em formato PDF a partir da ficha profissional."""
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.colors import HexColor
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from app.models.employee_profile import EmployeeProfile
+
+    # Buscar o utilizador e a ficha.
+    user = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if user is None:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+
+    profile = (
+        db.query(EmployeeProfile)
+        .filter(EmployeeProfile.user_id == collaborator_id)
+        .first()
+    )
+
+    # Montar o PDF.
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm,
+                            topMargin=2 * cm, bottomMargin=2 * cm)
+    styles = getSampleStyleSheet()
+
+    titulo_estilo = ParagraphStyle("Titulo", parent=styles["Title"],
+                                    fontSize=18, textColor=HexColor("#1e3a5f"),
+                                    spaceAfter=6)
+    sub_estilo = ParagraphStyle("Sub", parent=styles["Normal"],
+                                 fontSize=11, textColor=HexColor("#4a6fa5"),
+                                 spaceAfter=12)
+    sec_estilo = ParagraphStyle("Sec", parent=styles["Heading2"],
+                                 fontSize=12, textColor=HexColor("#1e3a5f"),
+                                 spaceBefore=14, spaceAfter=6)
+    corpo_estilo = ParagraphStyle("Corpo", parent=styles["Normal"],
+                                   fontSize=10, leading=14)
+    small_estilo = ParagraphStyle("Small", parent=styles["Normal"],
+                                   fontSize=9, textColor=HexColor("#666666"), leading=12)
+
+    elems = []
+
+    # Cabeçalho.
+    elems.append(Paragraph(user.full_name or "Colaborador", titulo_estilo))
+    if user.email:
+        elems.append(Paragraph(user.email, sub_estilo))
+    elems.append(Spacer(1, 6))
+
+    # Dados profissionais.
+    dados: list[list[str]] = []
+    if profile:
+        if profile.job_title:
+            dados.append(["Cargo", profile.job_title])
+        if profile.job_category:
+            dados.append(["Categoria", profile.job_category])
+        if profile.department:
+            dados.append(["Direção", profile.department])
+        if profile.workplace:
+            dados.append(["Local", profile.workplace])
+        if profile.admission_date:
+            dados.append(["Admissão", str(profile.admission_date)])
+        if profile.contract_type:
+            dados.append(["Vínculo", profile.contract_type.value if hasattr(profile.contract_type, "value") else str(profile.contract_type)])
+        if profile.work_schedule:
+            dados.append(["Horário", profile.work_schedule])
+        if profile.nationality:
+            dados.append(["Nacionalidade", profile.nationality])
+        if profile.employee_number:
+            dados.append(["Nº Colaborador", profile.employee_number])
+
+    if dados:
+        elems.append(Paragraph("Dados Profissionais", sec_estilo))
+        t = Table(dados, colWidths=[4 * cm, 12 * cm])
+        t.setStyle(TableStyle([
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("TEXTCOLOR", (0, 0), (0, -1), HexColor("#666666")),
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ]))
+        elems.append(t)
+
+    # Formação académica.
+    if profile and profile.education and isinstance(profile.education, list) and len(profile.education) > 0:
+        elems.append(Paragraph("Formação Académica", sec_estilo))
+        for e in profile.education:
+            partes = [e.get("nivel", "")]
+            if e.get("ano_inicio"):
+                partes.append(f"({e['ano_inicio']}" + (f" – {e.get('ano_fim', '?')}" if e.get("ano_fim") else ")"))
+            if e.get("pais"):
+                partes.append(f"– {e['pais']}")
+            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+
+    # Experiência profissional.
+    if profile and profile.experience and isinstance(profile.experience, list) and len(profile.experience) > 0:
+        elems.append(Paragraph("Experiência Profissional", sec_estilo))
+        for x in profile.experience:
+            partes = []
+            if x.get("onde"):
+                partes.append(f"<b>{x['onde']}</b>")
+            if x.get("ano_inicio"):
+                partes.append(f"({x['ano_inicio']}" + (f" – {x.get('ano_fim', '?')}" if x.get("ano_fim") else ")"))
+            if x.get("funcao"):
+                partes.append(f"— {x['funcao']}")
+            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+
+    # CV / notas.
+    if profile and profile.cv:
+        elems.append(Paragraph("Notas", sec_estilo))
+        for linha in profile.cv.split("\n"):
+            elems.append(Paragraph(linha or "&nbsp;", corpo_estilo))
+
+    if not dados and not elems:
+        elems.append(Paragraph("Ficha sem dados preenchidos.", small_estilo))
+
+    doc.build(elems)
+    buf.seek(0)
+
+    filename = f"CV_{(user.full_name or 'colaborador').replace(' ', '_')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )

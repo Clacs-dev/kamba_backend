@@ -11,7 +11,7 @@ variam em número e peso por colaborador. Isolamento por company_id.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Text, DateTime, ForeignKey, Enum, Boolean, Float, UniqueConstraint
+from sqlalchemy import String, Text, DateTime, ForeignKey, Enum, Boolean, Float, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -32,6 +32,7 @@ class EvaluationCycle(Base):
     )
     name: Mapped[str] = mapped_column(String(150), nullable=False)  # ex.: "Ciclo 2025"
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
+    form_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # configuração das etapas do formulário
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

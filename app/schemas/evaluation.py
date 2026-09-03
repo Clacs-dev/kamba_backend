@@ -9,6 +9,67 @@ from app.models.enums import EvaluationPhase, EvaluationCategory
 
 # --- Ciclo ---
 
+# Configuração de etapas do formulário de avaliação.
+class StageItem(BaseModel):
+    """Item dentro de uma etapa (objetivo, competência, valor, etc.)."""
+    description: str = Field(..., min_length=1, max_length=300)
+    weight: float | None = None          # peso (apenas para objetivos)
+    scale: list[str] | None = None       # rótulos da escala (apenas para competências)
+
+class StageConfig(BaseModel):
+    """Uma etapa do formulário de avaliação."""
+    number: int = Field(..., ge=1, le=10)
+    name: str = Field(..., min_length=1, max_length=150)
+    weight: float = Field(default=0, ge=0, le=100)
+    stage_type: str = Field(..., pattern=r"^(objectives|competencies|values|notes)$")
+    items: list[StageItem] = []
+
+class FormConfig(BaseModel):
+    """Configuração completa do formulário de avaliação de um ciclo."""
+    stages: list[StageConfig] = []
+
+# Defaults do formulário de avaliação.
+DEFAULT_FORM_CONFIG: dict = {
+    "stages": [
+        {
+            "number": 1,
+            "name": "Objectivos pactuados",
+            "weight": 50,
+            "stage_type": "objectives",
+            "items": [
+                {"description": "Atingir 100% da meta anual de vendas da equipa", "weight": 40},
+                {"description": "Reduzir o prazo médio de recebimento da carteira para 60 dias", "weight": 30},
+                {"description": "Garantir a adopção do CRM por 90% da equipa comercial", "weight": 30},
+            ],
+        },
+        {
+            "number": 2,
+            "name": "Competências",
+            "weight": 35,
+            "stage_type": "competencies",
+            "items": [
+                {"description": "Orientação para resultados", "scale": ["Raramente", "Às vezes", "Com regularidade", "Quase sempre", "Sempre"]},
+                {"description": "Trabalho em equipa e colaboração", "scale": ["Raramente", "Às vezes", "Com regularidade", "Quase sempre", "Sempre"]},
+                {"description": "Ética e conformidade", "scale": ["Raramente", "Às vezes", "Com regularidade", "Quase sempre", "Sempre"]},
+                {"description": "Comunicação", "scale": ["Raramente", "Às vezes", "Com regularidade", "Quase sempre", "Sempre"]},
+                {"description": "Adaptabilidade e melhoria contínua", "scale": ["Raramente", "Às vezes", "Com regularidade", "Quase sempre", "Sempre"]},
+            ],
+        },
+        {
+            "number": 3,
+            "name": "Valores e conduta",
+            "weight": 15,
+            "stage_type": "values",
+            "items": [
+                {"description": "Cumpri o Código de Ética e Conduta da empresa"},
+                {"description": "Cumpri as normas de segurança e saúde no trabalho"},
+                {"description": "Mantive assiduidade e pontualidade regulares"},
+            ],
+        },
+    ]
+}
+
+
 class CycleCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=150)
 
@@ -18,6 +79,7 @@ class CycleOut(BaseModel):
     company_id: int
     name: str
     is_open: bool
+    form_config: dict | None = None
     created_at: datetime
     model_config = {"from_attributes": True}
 

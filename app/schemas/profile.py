@@ -8,11 +8,14 @@ from app.models.enums import ContractType
 
 
 class EducationItem(BaseModel):
-    """Uma habilitação literária do colaborador (licenciatura, mestrado, ...)."""
+    """Uma habilita��ǜo literǭria do colaborador (licenciatura, mestrado, ...)."""
     nivel: str | None = None
     ano_inicio: int | None = Field(default=None, ge=1900, le=2200)
     ano_fim: int | None = Field(default=None, ge=1900, le=2200)
     pais: str | None = None
+    instituicao: str | None = Field(default=None, max_length=200)
+    curso: str | None = Field(default=None, max_length=200)
+    areas: str | None = Field(default=None, max_length=300)
 
 
 class ExperienceItem(BaseModel):

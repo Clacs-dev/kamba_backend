@@ -15,6 +15,7 @@ deixa saltar fases. Tudo isolado por company_id.
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -24,6 +25,7 @@ from app.models.evaluation import EvaluationCycle, Evaluation
 from app.schemas.evaluation import (
     CycleCreate, CycleOut, EvaluationCreate, EvaluationOut,
     FormAnswers, AppealRequest, CommissionDecisionRequest, DirectionCreate,
+    FormConfig, DEFAULT_FORM_CONFIG,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.evaluation_scoring import compute_score
@@ -97,7 +99,11 @@ def create_cycle(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
-    cycle = EvaluationCycle(company_id=current_user.company_id, name=payload.name)
+    cycle = EvaluationCycle(
+        company_id=current_user.company_id,
+        name=payload.name,
+        form_config=DEFAULT_FORM_CONFIG,
+    )
     db.add(cycle)
     db.commit()
     db.refresh(cycle)
@@ -115,6 +121,70 @@ def list_cycles(
         .order_by(EvaluationCycle.created_at.desc())
         .all()
     )
+
+
+@router.get("/cycles/{cycle_id}", response_model=CycleOut)
+def get_cycle(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cycle = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.id == cycle_id, EvaluationCycle.company_id == current_user.company_id)
+        .first()
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+    # Se ainda não tem form_config, devolve os defaults.
+    if cycle.form_config is None:
+        cycle.form_config = DEFAULT_FORM_CONFIG
+    return cycle
+
+
+@router.put("/cycles/{cycle_id}/config", response_model=CycleOut)
+def update_cycle_config(
+    cycle_id: int,
+    payload: FormConfig,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """Capital Humano configura as etapas e objectivos do formulário de avaliação de um ciclo."""
+    cycle = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.id == cycle_id, EvaluationCycle.company_id == current_user.company_id)
+        .first()
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+    cycle.form_config = payload.model_dump()
+    audit(db, actor=current_user, action="avaliacao.configurada",
+          detail=f"Formulário de avaliação do ciclo #{cycle.id} atualizado.")
+    db.commit()
+    db.refresh(cycle)
+    return cycle
+
+
+@router.post("/cycles/{cycle_id}/config/reset", response_model=CycleOut)
+def reset_cycle_config(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """Repor a configuração do formulário para os valores por defeito."""
+    cycle = (
+        db.query(EvaluationCycle)
+        .filter(EvaluationCycle.id == cycle_id, EvaluationCycle.company_id == current_user.company_id)
+        .first()
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Ciclo não encontrado.")
+    cycle.form_config = DEFAULT_FORM_CONFIG
+    audit(db, actor=current_user, action="avaliacao.config_reposta",
+          detail=f"Formulário de avaliação do ciclo #{cycle.id} reposto aos defaults.")
+    db.commit()
+    db.refresh(cycle)
+    return cycle
 
 
 # ---------- Criar avaliação (CH) ----------
@@ -159,6 +229,22 @@ def create_evaluation(
         if u is None:
             raise HTTPException(status_code=404, detail=f"{label} não encontrado nesta empresa.")
 
+    # Verifica duplicidade: já existe avaliação deste colaborador neste ciclo.
+    ja_existe = (
+        db.query(Evaluation)
+        .filter(
+            Evaluation.company_id == company_id,
+            Evaluation.cycle_id == payload.cycle_id,
+            Evaluation.collaborator_id == payload.collaborator_id,
+        )
+        .first()
+    )
+    if ja_existe is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Este colaborador já tem uma avaliação neste ciclo.",
+        )
+
     # Se o colaborador tem licença de maternidade aprovada, o ciclo é ajustado.
     from app.models.leave import LeaveRequest
     from app.models.enums import LeaveType, LeaveStatus
@@ -186,7 +272,14 @@ def create_evaluation(
         ) if payload.objectives else None,
     )
     db.add(ev)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Este colaborador já tem uma avaliação neste ciclo.",
+        )
     db.refresh(ev)
     # Notifica o colaborador de que tem uma autoavaliação pendente.
     notify(
@@ -289,6 +382,9 @@ def create_evaluations_by_direction(
     for ev in criadas:
         db.refresh(ev)
     return criadas
+
+
+@router.get("", response_model=list[EvaluationOut])
 def list_evaluations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
