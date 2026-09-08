@@ -69,3 +69,25 @@ class DisciplinaryProcess(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class DisciplinaryCommitteeMember(Base):
+    """
+    Membro da comissão disciplinar de um processo (alteração 11).
+
+    Exactamente 3 membros por processo, todos com role=DIRECTOR — validado
+    na rota (`disciplinary.py`), não aqui. Primeira associação N:M do
+    projecto; segue o mesmo estilo dos restantes modelos (colunas FK
+    escalares, sem `relationship()` ORM — a resolução para User é feita nas
+    rotas, tal como já acontece com accused_id/instructor_id acima).
+    """
+    __tablename__ = "disciplinary_committee_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    process_id: Mapped[int] = mapped_column(
+        ForeignKey("disciplinary_processes.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

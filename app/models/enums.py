@@ -31,6 +31,12 @@ class ContractType(str, enum.Enum):
     PRESTACAO_SERVICOS = "prestacao_servicos"  # prestação de serviços
 
 
+class WorkScheduleType(str, enum.Enum):
+    """Regime de horário do colaborador (secção 2.1)."""
+    FIXO = "fixo"    # entrada/saída/intervalo fixos, definidos na própria ficha
+    TURNO = "turno"  # associado a um turno (Shift) configurado pela empresa
+
+
 class DocumentType(str, enum.Enum):
     """Tipos de documento do dossier individual (secção 2.4)."""
     CONTRATO = "contrato"                        # contrato de trabalho

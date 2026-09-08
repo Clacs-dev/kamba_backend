@@ -31,6 +31,10 @@ class PlanUpdate(BaseModel):
     plan: str = Field(..., min_length=2, max_length=50)
 
 
+class ShiftsToggle(BaseModel):
+    uses_shifts: bool
+
+
 @router.get("/overview")
 def admin_overview(
     db: Session = Depends(get_db),
@@ -62,6 +66,7 @@ def admin_overview(
             "plan": company.plan if company else "essencial",
             "is_active": company.is_active if company else True,
             "user_count": user_count,
+            "uses_shifts": company.uses_shifts if company else False,
         },
         "settings": {
             "tec_objectives": round(settings.tec_objectives * 100),
@@ -107,3 +112,26 @@ def update_company_plan(
           detail=f"Plano de subscrição alterado: {anterior} → {payload.plan}.")
     db.commit()
     return {"plan": company.plan, "anterior": anterior}
+
+
+@router.put("/company/shifts")
+def toggle_company_shifts(
+    payload: ShiftsToggle,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+):
+    """
+    Liga/desliga o regime de turnos da empresa (alteração 9). Com o regime
+    desligado, os colaboradores continuam a poder usar horário fixo; só deixa
+    de fazer sentido associá-los a um turno novo.
+    """
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    if company is None:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+    anterior = company.uses_shifts
+    company.uses_shifts = payload.uses_shifts
+    audit(db, actor=current_user, action="admin.turnos_alterado",
+          detail=f"Regime de turnos: {anterior} → {payload.uses_shifts}.")
+    db.commit()
+    return {"uses_shifts": company.uses_shifts}

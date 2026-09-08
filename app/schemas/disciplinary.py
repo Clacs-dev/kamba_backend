@@ -2,7 +2,7 @@
 Schemas Pydantic — processo disciplinar (secção 4).
 """
 from datetime import datetime, date
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import DisciplinaryPhase, DisciplinaryOutcome
 
@@ -37,6 +37,23 @@ class DeadlineRequest(BaseModel):
     defense_deadline: date
 
 
+# Comissão disciplinar (alteração 11) — exactamente 3 directores.
+class CommitteeSetRequest(BaseModel):
+    member_ids: list[int]
+
+    @field_validator("member_ids")
+    @classmethod
+    def _exatamente_tres_distintos(cls, v: list[int]) -> list[int]:
+        if len(set(v)) != 3:
+            raise ValueError("A comissão disciplinar tem de ter exactamente 3 membros distintos.")
+        return v
+
+
+class CommitteeMemberOut(BaseModel):
+    id: int
+    full_name: str
+
+
 class ProcessOut(BaseModel):
     id: int
     company_id: int
@@ -57,4 +74,5 @@ class ProcessOut(BaseModel):
     decision_ack_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    committee_members: list[CommitteeMemberOut] = []
     model_config = {"from_attributes": True}

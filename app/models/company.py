@@ -34,6 +34,11 @@ class Company(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
+    # Se a empresa organiza a equipa por turnos (secção 2.1 / alteração 9).
+    # Quando True, a Administração configura os turnos em `shifts` e os
+    # colaboradores passam a poder ser associados a um deles na ficha.
+    uses_shifts: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Relação: uma empresa tem muitos utilizadores.
     users: Mapped[list["User"]] = relationship(
         back_populates="company",

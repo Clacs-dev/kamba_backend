@@ -19,6 +19,7 @@ class SurveyOut(BaseModel):
     dimensions: list[str]
     status: SurveyStatus
     created_at: datetime
+    participated: bool = False  # se o utilizador atual já respondeu a este pulse
 
 
 class SurveyResponseSubmit(BaseModel):

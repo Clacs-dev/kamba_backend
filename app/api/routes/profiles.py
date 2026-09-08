@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.enums import UserRole
 from app.models.employee_profile import EmployeeProfile
+from app.models.shift import Shift
 from app.schemas.profile import ProfileUpdate, ProfileOut
 from app.api.deps import get_current_user, require_roles
 
@@ -127,6 +128,20 @@ def update_collaborator_profile(
                 detail="Já existe um colaborador com este número nesta empresa.",
             )
         data.pop("employee_number", None)
+
+    # Validação: o turno escolhido tem de pertencer à mesma empresa.
+    shift_id = data.get("shift_id")
+    if shift_id is not None:
+        shift = (
+            db.query(Shift)
+            .filter(Shift.id == shift_id, Shift.company_id == current_user.company_id)
+            .first()
+        )
+        if shift is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Turno não encontrado nesta empresa.",
+            )
 
     for field, value in data.items():
         setattr(profile, field, value)

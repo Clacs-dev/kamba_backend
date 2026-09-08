@@ -44,10 +44,11 @@ def _get_survey_or_404(db: Session, company_id: int, survey_id: int) -> Survey:
     return s
 
 
-def _to_out(s: Survey) -> SurveyOut:
+def _to_out(s: Survey, participated: bool = False) -> SurveyOut:
     return SurveyOut(
         id=s.id, company_id=s.company_id, title=s.title,
         dimensions=json.loads(s.dimensions), status=s.status, created_at=s.created_at,
+        participated=participated,
     )
 
 
@@ -81,7 +82,14 @@ def list_surveys(
         .order_by(Survey.created_at.desc())
         .all()
     )
-    return [_to_out(s) for s in surveys]
+    participated_ids = {
+        p.survey_id
+        for p in db.query(SurveyParticipation).filter(
+            SurveyParticipation.company_id == current_user.company_id,
+            SurveyParticipation.user_id == current_user.id,
+        ).all()
+    }
+    return [_to_out(s, s.id in participated_ids) for s in surveys]
 
 
 @router.post("/{survey_id}/respond", status_code=status.HTTP_201_CREATED)
@@ -98,6 +106,13 @@ def respond(
     survey = _get_survey_or_404(db, current_user.company_id, survey_id)
     if survey.status != SurveyStatus.ABERTO:
         raise HTTPException(status_code=409, detail="Este inquérito está fechado.")
+
+    # A gestão cria/gesta os pulses, mas não responde (são dos colaboradores).
+    if current_user.role in SURVEY_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="A gestão não participa no pulse — apenas os colaboradores respondem.",
+        )
 
     # Já participou?
     already = (
@@ -144,6 +159,23 @@ def close_survey(
     db.commit()
     db.refresh(survey)
     return _to_out(survey)
+
+
+@router.delete("/{survey_id}")
+def delete_survey(
+    survey_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*SURVEY_ROLES)),
+):
+    """Elimina um pulse e as respostas/participações associadas."""
+    survey = _get_survey_or_404(db, current_user.company_id, survey_id)
+    db.query(SurveyResponse).filter(SurveyResponse.survey_id == survey.id).delete()
+    db.query(SurveyParticipation).filter(SurveyParticipation.survey_id == survey.id).delete()
+    audit(db, actor=current_user, action="cultura.pulse_eliminado",
+          detail=f"Inquérito-pulso '{survey.title}' eliminado.")
+    db.delete(survey)
+    db.commit()
+    return {"detail": "Inquérito eliminado."}
 
 
 # ---------- Evolução das dimensões por ciclo (calculada das respostas) ----------

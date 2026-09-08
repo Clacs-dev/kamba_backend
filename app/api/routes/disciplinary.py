@@ -21,9 +21,10 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.user import User
 from app.models.enums import UserRole, DisciplinaryPhase, DisciplinaryOutcome
-from app.models.disciplinary import DisciplinaryProcess
+from app.models.disciplinary import DisciplinaryProcess, DisciplinaryCommitteeMember
 from app.schemas.disciplinary import (
     ProcessCreate, ChargeNoteRequest, DefenseRequest, DecisionRequest, ProcessOut,
+    CommitteeSetRequest, CommitteeMemberOut,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
@@ -33,6 +34,11 @@ router = APIRouter(prefix="/disciplinary", tags=["disciplinary"])
 
 # Por decisão do cliente, todos os perfis podem instruir processos por enquanto.
 INSTRUCTOR_ROLES = tuple(UserRole)
+
+# Quem pode compor a comissão disciplinar de um processo — mesmo grupo que
+# gere pessoas noutros módulos (collaborators.py, admin.py), mais restrito
+# que INSTRUCTOR_ROLES acima (esse é um placeholder amplo e temporário).
+COMMITTEE_MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
 def _now():
@@ -74,6 +80,40 @@ def _require_phase(p: DisciplinaryProcess, expected: DisciplinaryPhase):
         )
 
 
+def _committee_map(db: Session, process_ids: list[int]) -> dict[int, list[CommitteeMemberOut]]:
+    """Membros da comissão de vários processos, numa só query (evita N+1)."""
+    if not process_ids:
+        return {}
+    rows = (
+        db.query(DisciplinaryCommitteeMember, User)
+        .join(User, User.id == DisciplinaryCommitteeMember.user_id)
+        .filter(DisciplinaryCommitteeMember.process_id.in_(process_ids))
+        .all()
+    )
+    result: dict[int, list[CommitteeMemberOut]] = {}
+    for member, user in rows:
+        result.setdefault(member.process_id, []).append(
+            CommitteeMemberOut(id=user.id, full_name=user.full_name)
+        )
+    return result
+
+
+def _process_out(db: Session, p: DisciplinaryProcess) -> ProcessOut:
+    out = ProcessOut.model_validate(p)
+    out.committee_members = _committee_map(db, [p.id]).get(p.id, [])
+    return out
+
+
+def _processes_out(db: Session, processes: list[DisciplinaryProcess]) -> list[ProcessOut]:
+    cmap = _committee_map(db, [p.id for p in processes])
+    saida = []
+    for p in processes:
+        out = ProcessOut.model_validate(p)
+        out.committee_members = cmap.get(p.id, [])
+        saida.append(out)
+    return saida
+
+
 # ---------- Fase 1: Instauração (instrutor) ----------
 
 @router.post("", response_model=ProcessOut, status_code=status.HTTP_201_CREATED)
@@ -104,7 +144,7 @@ def open_process(
           detail=f"Processo {p.reference} instaurado contra {accused.full_name}.")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 @router.get("", response_model=list[ProcessOut])
@@ -122,7 +162,7 @@ def list_processes(
     )
     if current_user.role not in INSTRUCTOR_ROLES:
         query = query.filter(DisciplinaryProcess.accused_id == current_user.id)
-    return query.order_by(DisciplinaryProcess.id.desc()).all()
+    return _processes_out(db, query.order_by(DisciplinaryProcess.id.desc()).all())
 
 
 @router.get("/{process_id}", response_model=ProcessOut)
@@ -135,7 +175,64 @@ def get_process(
     # O arguido pode ver o seu processo; os instrutores veem os da empresa.
     if current_user.role not in INSTRUCTOR_ROLES and p.accused_id != current_user.id:
         raise HTTPException(status_code=403, detail="Sem acesso a este processo.")
-    return p
+    return _process_out(db, p)
+
+
+# ---------- Comissão disciplinar (alteração 11) ----------
+
+@router.post("/{process_id}/committee", response_model=ProcessOut)
+def set_committee(
+    process_id: int,
+    payload: CommitteeSetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*COMMITTEE_MANAGE_ROLES)),
+):
+    """
+    Define (ou substitui) a comissão disciplinar do processo: exactamente 3
+    colaboradores com perfil Director, da mesma empresa, que não sejam o
+    próprio arguido. Pode ser chamado enquanto o processo não estiver
+    arquivado.
+    """
+    p = _get_or_404(db, current_user.company_id, process_id)
+    if p.phase == DisciplinaryPhase.ARQUIVADO:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Não é possível alterar a comissão de um processo já arquivado.",
+        )
+
+    if p.accused_id in payload.member_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="O arguido não pode integrar a comissão disciplinar do seu próprio processo.",
+        )
+
+    membros = (
+        db.query(User)
+        .filter(
+            User.id.in_(payload.member_ids),
+            User.company_id == current_user.company_id,
+            User.role == UserRole.DIRECTOR,
+        )
+        .all()
+    )
+    if len(membros) != 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Os 3 membros da comissão têm de ser colaboradores com perfil Director desta empresa.",
+        )
+
+    db.query(DisciplinaryCommitteeMember).filter(
+        DisciplinaryCommitteeMember.process_id == p.id
+    ).delete()
+    for membro in membros:
+        db.add(DisciplinaryCommitteeMember(process_id=p.id, user_id=membro.id))
+
+    audit(db, actor=current_user, action="disciplina.comissao_definida",
+          detail=f"Comissão disciplinar do processo {p.reference} definida: "
+                 + ", ".join(m.full_name for m in membros) + ".")
+    db.commit()
+    db.refresh(p)
+    return _process_out(db, p)
 
 
 # ---------- Fase 2: Nota de culpa (instrutor emite) ----------
@@ -165,7 +262,7 @@ def issue_charge_note(
                  f"({'com' if payload.preventive_suspension else 'sem'} suspensão preventiva).")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 # ---------- Fase 2->3: Arguido assina conhecimento da nota de culpa ----------
@@ -187,7 +284,7 @@ def acknowledge_charge(
           detail=f"Arguido tomou conhecimento da nota de culpa no processo {p.reference}.")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 # ---------- Fase 3: Defesa (arguido submete) ----------
@@ -216,7 +313,7 @@ def submit_defense(
           detail=f"Defesa submetida no processo {p.reference}.")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 # ---------- Fase 4: Decisão (instrutor emite) ----------
@@ -244,7 +341,7 @@ def issue_decision(
           detail=f"Decisão emitida no processo {p.reference}.")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 # ---------- Fase 5->6: Arguido assina conhecimento da decisão -> arquiva ----------
@@ -266,7 +363,7 @@ def acknowledge_decision(
           detail=f"Processo {p.reference} encerrado e averbado após conhecimento da decisão.")
     db.commit()
     db.refresh(p)
-    return p
+    return _process_out(db, p)
 
 
 # ---------- Consultas ----------
@@ -278,7 +375,7 @@ def list_processes_of_collaborator(
     current_user: User = Depends(require_roles(*INSTRUCTOR_ROLES)),
 ):
     """O instrutor consulta o cadastro disciplinar de um colaborador."""
-    return (
+    return _processes_out(db, (
         db.query(DisciplinaryProcess)
         .filter(
             DisciplinaryProcess.company_id == current_user.company_id,
@@ -286,7 +383,7 @@ def list_processes_of_collaborator(
         )
         .order_by(DisciplinaryProcess.created_at.desc())
         .all()
-    )
+    ))
 
 
 # ---------- PDF da peça disciplinar ----------

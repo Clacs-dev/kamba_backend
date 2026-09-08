@@ -10,10 +10,12 @@ Permissões: criar, editar e desativar são reservados a Capital Humano e
 Administração. Listar e ver são permitidos a esses mesmos perfis (os
 colaboradores comuns têm o seu próprio portal, tratado noutro módulo).
 """
+import logging
 import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -28,6 +30,8 @@ from app.schemas.collaborator import (
     CollaboratorRowOut,
 )
 from app.api.deps import require_roles, get_current_user
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/collaborators", tags=["collaborators"])
 
@@ -224,9 +228,17 @@ def create_collaborator(
     db.commit()
     db.refresh(collaborator)
 
-        # Atribui automaticamente o número de colaborador (sequencial, 4 dígitos).
-    try:
-        from app.models.employee_profile import EmployeeProfile
+    # Atribui automaticamente o número de colaborador (sequencial, 4 dígitos).
+    #
+    # Dois pedidos de criação em simultâneo podem calcular o mesmo "maior + 1"
+    # antes de qualquer um comitar (não há lock nem sequência dedicada em
+    # SQLite/Postgres aqui). A UniqueConstraint (company_id, employee_number)
+    # em EmployeeProfile apanha a colisão no INSERT — em vez de a engolir em
+    # silêncio, repetimos com o número seguinte, mantendo o padrão sequencial
+    # (nunca aleatório) pedido para este campo.
+    from app.models.employee_profile import EmployeeProfile
+
+    for tentativa in range(5):
         existentes = (
             db.query(EmployeeProfile.employee_number)
             .filter(
@@ -243,7 +255,8 @@ def create_collaborator(
                     maior = n
             except (ValueError, TypeError):
                 continue
-        novo_numero = f"{maior + 1:04d}"
+        novo_numero = f"{maior + 1 + tentativa:04d}"
+
         perfil = (
             db.query(EmployeeProfile)
             .filter(EmployeeProfile.user_id == collaborator.id)
@@ -256,12 +269,23 @@ def create_collaborator(
                 employee_number=novo_numero,
             )
             db.add(perfil)
-        elif not perfil.employee_number:
+        else:
             perfil.employee_number = novo_numero
-        db.commit()
-    except Exception as e:
-        print(f"[NUM] Não foi possível gerar o número de colaborador: {e}")
-        db.rollback()
+
+        try:
+            db.commit()
+            break
+        except IntegrityError as e:
+            db.rollback()
+            log.warning(
+                "Colisão no número de colaborador (tentativa %d/5) para company_id=%s: %s",
+                tentativa + 1, company_id, e,
+            )
+    else:
+        log.error(
+            "Não foi possível atribuir número de colaborador após 5 tentativas (company_id=%s, user_id=%s).",
+            company_id, collaborator.id,
+        )
 
 
         # Envia o email de boas-vindas com as credenciais (email centralizado da KAMBA).
@@ -665,6 +689,8 @@ def gerar_cv_pdf(
             dados.append(["Admissão", str(profile.admission_date)])
         if profile.contract_type:
             dados.append(["Vínculo", profile.contract_type.value if hasattr(profile.contract_type, "value") else str(profile.contract_type)])
+        if profile.contract_end_date:
+            dados.append(["Término do contrato", str(profile.contract_end_date)])
         if profile.work_schedule:
             dados.append(["Horário", profile.work_schedule])
         if profile.nationality:
@@ -707,6 +733,21 @@ def gerar_cv_pdf(
                 partes.append(f"({x['ano_inicio']}" + (f" – {x.get('ano_fim', '?')}" if x.get("ano_fim") else ")"))
             if x.get("funcao"):
                 partes.append(f"— {x['funcao']}")
+            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+
+    # Cursos e certificações.
+    if profile and profile.certifications and isinstance(profile.certifications, list) and len(profile.certifications) > 0:
+        elems.append(Paragraph("Cursos e Certificações", sec_estilo))
+        for c in profile.certifications:
+            partes = []
+            if c.get("nome"):
+                partes.append(f"<b>{c['nome']}</b>")
+            if c.get("instituicao"):
+                partes.append(f"— {c['instituicao']}")
+            if c.get("data"):
+                partes.append(f"({c['data']})")
+            if c.get("validade"):
+                partes.append(f"válido até {c['validade']}")
             elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
 
     # CV / notas.

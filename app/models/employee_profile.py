@@ -9,13 +9,13 @@ no login.
 
 Pertence sempre a uma empresa (company_id) — parte do isolamento multi-tenant.
 """
-from datetime import datetime, date, timezone
+from datetime import datetime, date, time, timezone
 
-from sqlalchemy import String, Text, DateTime, Date, ForeignKey, Enum, UniqueConstraint, JSON
+from sqlalchemy import String, Text, DateTime, Date, Time, ForeignKey, Enum, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.enums import ContractType
+from app.models.enums import ContractType, WorkScheduleType
 
 
 def _now() -> datetime:
@@ -45,19 +45,32 @@ class EmployeeProfile(Base):
     contract_type: Mapped[ContractType | None] = mapped_column(
         Enum(ContractType), nullable=True
     )
+    contract_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)   # obrigatório quando contract_type == TERMO_CERTO (alteração 5)
     job_category: Mapped[str | None] = mapped_column(String(150), nullable=True)  # categoria profissional
     job_title: Mapped[str | None] = mapped_column(String(150), nullable=True)     # cargo específico (ex.: Chefe de Vendas)
     department: Mapped[str | None] = mapped_column(String(150), nullable=True)    # direção / área
     workplace: Mapped[str | None] = mapped_column(String(150), nullable=True)     # local de trabalho
-    work_schedule: Mapped[str | None] = mapped_column(String(200), nullable=True) # horário (ex.: 2.ª a 6.ª · 08h00-16h30)
+    work_schedule: Mapped[str | None] = mapped_column(String(200), nullable=True) # horário em texto livre (legado — mantido por compatibilidade)
+
+    # --- Horário estruturado (alterações 8 e 9) ---
+    work_schedule_type: Mapped[WorkScheduleType | None] = mapped_column(Enum(WorkScheduleType), nullable=True)
+    fixed_entry_time: Mapped[time | None] = mapped_column(Time, nullable=True)    # regime FIXO: hora de entrada
+    fixed_exit_time: Mapped[time | None] = mapped_column(Time, nullable=True)     # regime FIXO: hora de saída
+    fixed_break_start: Mapped[time | None] = mapped_column(Time, nullable=True)   # regime FIXO: início do intervalo
+    fixed_break_end: Mapped[time | None] = mapped_column(Time, nullable=True)     # regime FIXO: fim do intervalo
+    shift_id: Mapped[int | None] = mapped_column(
+        ForeignKey("shifts.id", ondelete="SET NULL"), nullable=True
+    )  # regime TURNO: turno da empresa a que o colaborador está associado
+
     situation_tags: Mapped[str | None] = mapped_column(String(300), nullable=True) # etiquetas livres, separadas por vírgula
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)    # nacionalidade (ex.: Angolana)
     habilitacoes: Mapped[str | None] = mapped_column(String(200), nullable=True)  # habilitações literárias (ex.: Ensino Médio, Licenciatura)
     university: Mapped[str | None] = mapped_column(String(200), nullable=True)    # universidade de formação
     course: Mapped[str | None] = mapped_column(String(200), nullable=True)        # curso / habilitação académica
     cv: Mapped[str | None] = mapped_column(Text, nullable=True)                   # CV livre — o RH digitaliza aqui
-    education: Mapped[list | None] = mapped_column(JSON, nullable=True)           # formação académica: [{nivel, ano_inicio, ano_fim, pais}, ...]
+    education: Mapped[list | None] = mapped_column(JSON, nullable=True)           # formação académica: [{nivel, ano_inicio, ano_fim, pais, instituicao, curso, areas}, ...]
     experience: Mapped[list | None] = mapped_column(JSON, nullable=True)          # experiência de trabalho: [{onde, ano_inicio, ano_fim, funcao}, ...]
+    certifications: Mapped[list | None] = mapped_column(JSON, nullable=True)      # cursos/certificações: [{nome, instituicao, data, certificado_url, validade}, ...] (alteração 10)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)     # URL da foto do colaborador (Cloudinary)
 
     updated_at: Mapped[datetime] = mapped_column(
