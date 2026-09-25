@@ -7,7 +7,7 @@ from app.api.routes import (
     auth, collaborators, profiles, dossier, evaluation, disciplinary,
     training, development, survey, notification, occupational, compensation, career,
     dashboard, report, audit, onboarding, evaluation_settings, ficha_correction, leave, admin, ai,
-    shifts, chat,
+    shifts, chat, talent, organs, company,
 )
 
 api_router = APIRouter()
@@ -35,3 +35,6 @@ api_router.include_router(admin.router)
 api_router.include_router(ai.router)
 api_router.include_router(shifts.router)
 api_router.include_router(chat.router)
+api_router.include_router(talent.router)
+api_router.include_router(organs.router)
+api_router.include_router(company.router)

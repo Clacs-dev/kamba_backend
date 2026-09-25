@@ -1,6 +1,8 @@
 """
 Rotas de autenticação do KAMBA.
 """
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -26,7 +28,13 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     os restantes colaboradores de dentro do sistema.
     """
     # Cria a empresa (o tenant).
-    company = Company(name=payload.company_name)
+    company = Company(
+        name=payload.company_name,
+        vision=payload.vision,
+        mission=payload.mission,
+        values=payload.values,
+        objectives=payload.objectives,
+    )
     db.add(company)
     db.flush()  # obtém o company.id sem fechar a transacção
 
@@ -129,12 +137,21 @@ def me(
 
 # ---------- Troca de password ----------
 
-from pydantic import BaseModel, Field as _Field
+from pydantic import BaseModel, Field as _Field, EmailStr
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = _Field(..., min_length=8, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordOut(BaseModel):
+    detail: str
+    temporary_password: str | None = None
 
 
 @router.post("/change-password")
@@ -156,3 +173,50 @@ def change_password(
     current_user.must_change_password = False
     db.commit()
     return {"detail": "Password alterada com sucesso."}
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordOut)
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Recuperação de acesso quando o utilizador esquece a password.
+
+    Gera uma nova password temporária, marca must_change_password=True e tenta
+    enviá-la por email. Como pode não haver email a receber (SMTP inativo ou
+    colaborador sem caixa de correio), a nova password também é devolvida na
+    resposta — quem está no atendimento entrega-a em mãos ao colaborador.
+
+    Quando o email não pertence a nenhuma conta ativa, devolve uma mensagem
+    genérica (igual para todos) para não revelar que emails existem.
+    """
+    user = db.query(User).filter(User.email == payload.email).first()
+    if user is None or not user.is_active:
+        return ForgotPasswordOut(
+            detail="Se o email existir numa conta ativa, foi gerada uma nova password temporária."
+        )
+
+    temp_password = secrets.token_urlsafe(9)  # ~12 caracteres legíveis
+
+    user.hashed_password = hash_password(temp_password)
+    user.must_change_password = True
+    db.commit()
+    db.refresh(user)
+
+    # Tenta reenviar o email de boas-vindas; se falhar, a password é entregue
+    # em mãos a partir da resposta desta rota.
+    try:
+        from app.services.email_service import email_boas_vindas
+        from app.models.company import Company
+        empresa = db.query(Company).filter(Company.id == user.company_id).first()
+        email_boas_vindas(
+            nome=user.full_name,
+            email=user.email,
+            senha_temporaria=temp_password,
+            empresa=empresa.name if empresa else "",
+        )
+    except Exception as e:
+        print(f"[EMAIL] Não foi possível enviar recuperação: {e}")
+
+    return ForgotPasswordOut(
+        detail="Nova password temporária gerada. Altere-a no primeiro acesso.",
+        temporary_password=temp_password,
+    )

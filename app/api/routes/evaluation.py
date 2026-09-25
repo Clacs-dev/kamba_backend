@@ -416,9 +416,9 @@ def list_evaluations(
 @router.get("/history")
 def evaluations_history(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.DIRECTOR)),
+    current_user: User = Depends(get_current_user),
 ):
-    """Histórico consolidado dos últimos ciclos (até 3 anos)."""
+    """Histórico consolidado dos últimos ciclos (até 3 anos) — disponível a todos os perfis."""
     from collections import defaultdict
     from app.models.employee_profile import EmployeeProfile
     from app.models.company import Company

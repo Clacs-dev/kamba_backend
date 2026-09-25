@@ -35,6 +35,11 @@ class SurveyResults(BaseModel):
     participation_count: int = 0
     universe: int = 0
     participation_rate: float | None = None
+    # eNPS calculado das respostas à pergunta de recomendação (−100 .. +100).
+    enps_score: int | None = None
+    enps_promoters: int = 0
+    enps_neutrals: int = 0
+    enps_detractors: int = 0
 
 
 # --- Evolução das dimensões por ciclo (calculada das respostas reais) ---

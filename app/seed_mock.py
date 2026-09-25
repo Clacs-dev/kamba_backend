@@ -580,11 +580,12 @@ def seed_dossier_and_survey(db, company):
             company_id=company.id,
             title="Inquérito-pulso — 3.º Trimestre 2026",
             dimensions=json.dumps(["confianca_lideranca", "clareza_estrategica",
-                                   "reconhecimento", "equilibrio_vida"]),
+                                   "reconhecimento", "equilibrio_vida", "recomendaria_empresa"]),
             status=SurveyStatus.ABERTO,
         )
         db.add(survey)
         db.flush()
+        recommend = (3, 5, 4, 2, 5, 4)  # 4 prom. · 1 neut. · 1 detr. → eNPS +50
         for i in range(6):
             db.add(SurveyResponse(
                 company_id=company.id, survey_id=survey.id,
@@ -593,6 +594,7 @@ def seed_dossier_and_survey(db, company):
                     "clareza_estrategica": 3 + ((i + 1) % 3),
                     "reconhecimento": 3 + ((i + 2) % 3),
                     "equilibrio_vida": 3 + ((i + 3) % 3),
+                    "recomendaria_empresa": recommend[i % len(recommend)],
                 }),
             ))
         for uid in (3, 5, 6, 7, 9, 10):

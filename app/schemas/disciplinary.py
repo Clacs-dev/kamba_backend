@@ -4,15 +4,32 @@ Schemas Pydantic — processo disciplinar (secção 4).
 from datetime import datetime, date
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.enums import DisciplinaryPhase, DisciplinaryOutcome
+from app.models.enums import DisciplinaryPhase, DisciplinaryOutcome, CommitteeRole
 
 
-# Fase 1 — Instauração
+# Fase 1 — Instauração (referência gerada automaticamente pelo sistema).
+class CommitteeMemberIn(BaseModel):
+    """Colaborador escolhido para a comissão e o papel que nele recai."""
+    user_id: int
+    role: CommitteeRole
+
+
 class ProcessCreate(BaseModel):
     accused_id: int
-    reference: str = Field(..., min_length=1, max_length=100)
     imputed_facts: str = Field(..., min_length=3)
     disciplinary_record: str | None = None
+    committee: list[CommitteeMemberIn]
+
+    @field_validator("committee")
+    @classmethod
+    def _comissao_valida(cls, v: list[CommitteeMemberIn]) -> list[CommitteeMemberIn]:
+        ids = [m.user_id for m in v]
+        if len(ids) != 3 or len(set(ids)) != 3:
+            raise ValueError("A comissão disciplinar tem de ter exactamente 3 membros distintos.")
+        papeis = [m.role for m in v]
+        if len(set(papeis)) != 3 or set(papeis) != set(CommitteeRole):
+            raise ValueError("A comissão tem de ter um relator, um instrutor e um presidente da comissão.")
+        return v
 
 
 # Fase 2 — Nota de culpa (instrutor emite)
@@ -39,19 +56,24 @@ class DeadlineRequest(BaseModel):
 
 # Comissão disciplinar (alteração 11) — exactamente 3 directores.
 class CommitteeSetRequest(BaseModel):
-    member_ids: list[int]
+    committee: list[CommitteeMemberIn]
 
-    @field_validator("member_ids")
+    @field_validator("committee")
     @classmethod
-    def _exatamente_tres_distintos(cls, v: list[int]) -> list[int]:
-        if len(set(v)) != 3:
+    def _comissao_valida(cls, v: list[CommitteeMemberIn]) -> list[CommitteeMemberIn]:
+        ids = [m.user_id for m in v]
+        if len(ids) != 3 or len(set(ids)) != 3:
             raise ValueError("A comissão disciplinar tem de ter exactamente 3 membros distintos.")
+        papeis = [m.role for m in v]
+        if len(set(papeis)) != 3 or set(papeis) != set(CommitteeRole):
+            raise ValueError("A comissão tem de ter um relator, um instrutor e um presidente da comissão.")
         return v
 
 
 class CommitteeMemberOut(BaseModel):
     id: int
     full_name: str
+    role: CommitteeRole
 
 
 class ProcessOut(BaseModel):

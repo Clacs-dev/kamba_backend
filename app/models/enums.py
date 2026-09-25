@@ -90,6 +90,21 @@ class DisciplinaryOutcome(str, enum.Enum):
     DESPEDIMENTO = "despedimento"
 
 
+class CommitteeRole(str, enum.Enum):
+    """Papel de cada um dos 3 membros da comissão disciplinar."""
+    RELATOR = "relator"                # relata os factos e propõe a decisão
+    INSTRUTOR = "instrutor"            # conduz a instrução (nota de culpa, defesa, decisão)
+    PRESIDENTE = "presidente"          # preside a comissão
+
+
+class CompanyOrgan(str, enum.Enum):
+    """Os órgãos sociais de uma empresa (módulo Órgãos Sociais)."""
+    CONSELHO_ADMINISTRACAO = "conselho_administracao"  # Conselho de Administração (CA)
+    COMISSAO_EXECUTIVA = "comissao_executiva"          # Comissão Executiva (CE)
+    CONSELHO_FISCAL = "conselho_fiscal"                # Conselho Fiscal (CF)
+    MESA_ASSEMBLEIA = "mesa_assembleia"                # Mesa da Assembleia
+
+
 class TrainingSource(str, enum.Enum):
     """Origem da necessidade formativa (secção 5)."""
     SISTEMA = "sistema"    # identificada automaticamente (nota < 3,5)
@@ -127,6 +142,21 @@ class SurveyStatus(str, enum.Enum):
     """Estado de um inquérito-pulso (secção 6)."""
     ABERTO = "aberto"
     FECHADO = "fechado"
+
+
+class PotentialLevel(str, enum.Enum):
+    """Eixo potencial do Comité de Talento / matriz 9-Box (secção relatórios)."""
+    ALTO = "alto"
+    MEDIO = "medio"
+    BAIXO = "baixo"
+
+
+class ReadinessLevel(str, enum.Enum):
+    """Prontidão de um sucessor para assumir um cargo-chave (plano de sucessão)."""
+    PRONTO_AGORA = "pronto_agora"      # pode assumir de imediato
+    EM_6_MESES = "em_6_meses"          # pronto em até 6 meses
+    EM_12_MESES = "em_12_meses"        # pronto em até 12 meses
+    NAO_QUALIFICADO = "nao_qualificado"  # em desenvolvimento, ainda sem horizonte
 
 
 class FitnessResult(str, enum.Enum):

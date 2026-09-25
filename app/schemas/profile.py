@@ -62,6 +62,7 @@ class ProfileUpdate(BaseModel):
     habilitacoes: str | None = Field(default=None, max_length=200)
     university: str | None = Field(default=None, max_length=200)
     course: str | None = Field(default=None, max_length=200)
+    birth_date: date | None = None
     cv: str | None = None
     education: list[EducationItem] | None = None
     experience: list[ExperienceItem] | None = None
@@ -120,6 +121,7 @@ class ProfileOut(BaseModel):
     habilitacoes: str | None
     university: str | None
     course: str | None
+    birth_date: date | None = None
     cv: str | None
     education: list[EducationItem] | None = None
     experience: list[ExperienceItem] | None = None

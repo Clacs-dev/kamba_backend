@@ -25,6 +25,12 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
 
+    # Identidade da empresa (opcional no registo; editável na Administração).
+    vision: str | None = None
+    mission: str | None = None
+    values: str | None = None
+    objectives: str | None = None
+
 
 # --- Login ---
 

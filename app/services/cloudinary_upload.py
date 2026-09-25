@@ -23,7 +23,11 @@ def _ensure_config() -> bool:
     secret = os.getenv("CLOUDINARY_API_SECRET")
     if not (cloud and key and secret):
         return False
-    import cloudinary
+    try:
+        import cloudinary
+    except ImportError:
+        print("[CLOUDINARY] Pacote 'cloudinary' não instalado — upload ignorado.")
+        return False
     cloudinary.config(cloud_name=cloud, api_key=key, api_secret=secret, secure=True)
     _configured = True
     return True

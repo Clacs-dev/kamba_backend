@@ -54,6 +54,19 @@ def _get_item(db, company_id, item_id) -> OnboardingItem:
     return item
 
 
+def _recalc_done(item: OnboardingItem) -> None:
+    """Deriva a conclusão a partir dos estados aplicável/entregue.
+
+    - Aplicável = N  -> excluído (não conta como pendente);
+    - Aplicável = S e Entregue = S  -> concluído;
+    - Caso contrário -> pendente.
+    """
+    if item.applicable is False or item.delivered is True:
+        item.done = True
+    else:
+        item.done = False
+
+
 @router.get("/{collaborator_id}", response_model=list[ItemOut])
 def list_items(
     collaborator_id: int,
@@ -88,6 +101,7 @@ def create_item(
         applicable=payload.applicable,
         delivered=payload.delivered,
     )
+    _recalc_done(item)
     db.add(item)
     audit(db, actor=current_user, action="acolhimento.item_criado",
           detail=f"Item de acolhimento criado para o colaborador #{payload.collaborator_id}.")
@@ -102,7 +116,8 @@ def toggle_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE)),
 ):
-    """Marca/desmarca um item como concluído."""
+    """Marca/desmarca um item como concluído (override manual — o estado
+    normal deriva de aplicável/entregue em PATCH)."""
     item = _get_item(db, current_user.company_id, item_id)
     item.done = not item.done
     audit(db, actor=current_user, action="acolhimento.item_alternado",
@@ -125,6 +140,7 @@ def patch_item(
     dados = payload.model_dump(exclude_unset=True)
     for campo, valor in dados.items():
         setattr(item, campo, valor)
+    _recalc_done(item)
     audit(db, actor=current_user, action="acolhimento.item_atualizado",
           detail=f"Item de acolhimento #{item.id} atualizado.")
     db.commit()

@@ -35,6 +35,13 @@ class ShiftsToggle(BaseModel):
     uses_shifts: bool
 
 
+class CompanyIdentityUpdate(BaseModel):
+    vision: str | None = None
+    mission: str | None = None
+    values: str | None = None
+    objectives: str | None = None
+
+
 @router.get("/overview")
 def admin_overview(
     db: Session = Depends(get_db),
@@ -67,6 +74,10 @@ def admin_overview(
             "is_active": company.is_active if company else True,
             "user_count": user_count,
             "uses_shifts": company.uses_shifts if company else False,
+            "vision": company.vision if company else None,
+            "mission": company.mission if company else None,
+            "values": company.values if company else None,
+            "objectives": company.objectives if company else None,
         },
         "settings": {
             "tec_objectives": round(settings.tec_objectives * 100),
@@ -135,3 +146,40 @@ def toggle_company_shifts(
           detail=f"Regime de turnos: {anterior} → {payload.uses_shifts}.")
     db.commit()
     return {"uses_shifts": company.uses_shifts}
+
+
+@router.put("/company/identity")
+def update_company_identity(
+    payload: CompanyIdentityUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+):
+    """
+    Atualiza a identidade da empresa (visão, missão, valores, objetivos).
+    Fica registado na auditoria; a identidade aparece no rodapé de todas as
+    páginas da empresa.
+    """
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    if company is None:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+    campos = {
+        "vision": payload.vision,
+        "mission": payload.mission,
+        "values": payload.values,
+        "objectives": payload.objectives,
+    }
+    for campo, valor in campos.items():
+        if valor is not None:
+            setattr(company, campo, valor)
+
+    audit(db, actor=current_user, action="admin.identidade_alterada",
+          detail="Identidade da empresa (visão, missão, valores, objetivos) atualizada.")
+    db.commit()
+    return {
+        "name": company.name,
+        "vision": company.vision,
+        "mission": company.mission,
+        "values": company.values,
+        "objectives": company.objectives,
+    }

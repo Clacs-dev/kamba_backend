@@ -14,7 +14,7 @@ from sqlalchemy import String, Text, DateTime, Date, ForeignKey, Enum, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.enums import DisciplinaryPhase, DisciplinaryOutcome
+from app.models.enums import DisciplinaryPhase, DisciplinaryOutcome, CommitteeRole
 
 
 def _now() -> datetime:
@@ -76,10 +76,11 @@ class DisciplinaryCommitteeMember(Base):
     Membro da comissão disciplinar de um processo (alteração 11).
 
     Exactamente 3 membros por processo, todos com role=DIRECTOR — validado
-    na rota (`disciplinary.py`), não aqui. Primeira associação N:M do
-    projecto; segue o mesmo estilo dos restantes modelos (colunas FK
-    escalares, sem `relationship()` ORM — a resolução para User é feita nas
-    rotas, tal como já acontece com accused_id/instructor_id acima).
+    na rota (`disciplinary.py`), não aqui. Cada membro tem ainda um papel na
+    comissão (relator / instrutor / presidente), um por membro. Primeira
+    associação N:M do projecto; segue o mesmo estilo dos restantes modelos
+    (colunas FK escalares, sem `relationship()` ORM — a resolução para User é
+    feita nas rotas, tal como já acontece com accused_id/instructor_id acima).
     """
     __tablename__ = "disciplinary_committee_members"
 
@@ -89,5 +90,8 @@ class DisciplinaryCommitteeMember(Base):
     )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    role: Mapped[CommitteeRole] = mapped_column(
+        Enum(CommitteeRole), default=CommitteeRole.RELATOR, nullable=False
     )
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -160,6 +160,110 @@ def gerar_pdf_auditoria(rows: list, company_name: str) -> bytes:
     return buf.read()
 
 
+def gerar_pdf_talento(report, company_name: str) -> bytes:
+    """
+    Gera o PDF da secção "Talento & Sucessão": matriz 9-Box, estrelas/risco
+    de saída e o plano de sucessão por cargo-chave.
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=2 * cm, bottomMargin=2 * cm, leftMargin=2 * cm, rightMargin=2 * cm,
+        title=f"Talento & Sucessão — {report.cycle_name}",
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Title"], textColor=PRI, fontSize=18, spaceAfter=4)
+    eyebrow = ParagraphStyle("eyebrow", parent=styles["Normal"], textColor=DIM, fontSize=8, spaceAfter=2)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=PRI, fontSize=13, spaceBefore=14)
+    normal = styles["Normal"]
+
+    ROTULAR = {
+        ("alto", "alto"): "Estrela (alto p. + alto pot.)",
+        ("alto", "medio"): "Alto desempenho · pot. médio",
+        ("alto", "baixo"): "Alto desempenho · pot. baixo",
+        ("medio", "alto"): "Alto potencial · desempenho médio",
+        ("medio", "medio"): "Consistente",
+        ("medio", "baixo"): "Desempenho médio · pot. baixo",
+        ("baixo", "alto"): "Potencial alto · desempenho baixo",
+        ("baixo", "medio"): "Em melhoria necessária",
+        ("baixo", "baixo"): "Risco / plano de melhoria",
+    }
+
+    story = []
+    story.append(Paragraph("KAMBA · TALENTO & SUCESSÃO", eyebrow))
+    story.append(Paragraph(f"{report.cycle_name}", h1))
+    story.append(Paragraph(f"Empresa: {company_name}", normal))
+    story.append(Paragraph(f"Gerado em {date.today().strftime('%d/%m/%Y')}", normal))
+    story.append(Spacer(1, 6))
+
+    story.append(Paragraph("Matriz 9-Box (desempenho × potencial)", h2))
+    if report.grid:
+        grid_data = [["Desempenho \\ Potencial", "Alto", "Médio", "Baixo"]]
+        for perc in ("alto", "medio", "baixo"):
+            linha = [perc.capitalize()]
+            for pot in ("alto", "medio", "baixo"):
+                n = report.grid.get(f"{perc}_{pot}", 0)
+                linha.append(str(n))
+            grid_data.append(linha)
+        t = Table(grid_data, colWidths=[5 * cm, 3.5 * cm, 3.5 * cm, 3.5 * cm])
+        t.setStyle(_estilo_tabela(cabecalho=True))
+        story.append(t)
+        story.append(Spacer(1, 6))
+        legenda = " · ".join(
+            f"{ROTULAR[tuple(k.split('_'))]}: {v}" for k, v in sorted(report.grid.items())
+        )
+        story.append(Paragraph(legenda, normal))
+    else:
+        story.append(Paragraph("Sem matriz — atribua potencial no comité de talento.", normal))
+
+    story.append(Paragraph(f"Estrelas (alto potencial + alto desempenho): {report.high_potential_count}  ·  Risco de saída assinalado: {report.risk_of_exit_count}", normal))
+    story.append(Spacer(1, 4))
+
+    story.append(Paragraph("Colaboradores avaliados", h2))
+    if report.matrix:
+        dados = [["Colaborador", "Desempenho", "Potencial", "Estrela", "Risco de saída"]]
+        for r in report.matrix:
+            dados.append([
+                r.collaborator_name,
+                f"{r.performance_score:.2f}" if r.performance_score is not None else "—",
+                (r.potential.value if r.potential else "—"),
+                "Sim" if r.is_high_potential else "",
+                "Sim" if r.risk_of_exit else "",
+            ])
+        t = Table(dados, colWidths=[5 * cm, 3 * cm, 3 * cm, 2.5 * cm, 3 * cm])
+        t.setStyle(_estilo_tabela(cabecalho=True))
+        story.append(t)
+    else:
+        story.append(Paragraph("Sem colaboradores avaliados no ciclo.", normal))
+
+    story.append(Paragraph("Plano de sucessão por cargo-chave", h2))
+    if report.succession:
+        succ_data = [["Cargo-chave", "Titular", "Sucessor", "Prontidão", "Risco de saída"]]
+        for s in report.succession:
+            succ_data.append([
+                s.role_title,
+                s.incumbent_name or "—",
+                s.successor_name,
+                s.readiness.value.replace("_", " ").capitalize(),
+                "Sim" if s.risk_of_exit else "",
+            ])
+        t = Table(succ_data, colWidths=[4 * cm, 3.5 * cm, 3.5 * cm, 3.5 * cm, 2.5 * cm])
+        t.setStyle(_estilo_tabela(cabecalho=True))
+        story.append(t)
+    else:
+        story.append(Paragraph("Sem plano de sucessão definido.", normal))
+
+    story.append(Spacer(1, 18))
+    rodape = ParagraphStyle("rodape", parent=normal, textColor=DIM, fontSize=8)
+    story.append(Paragraph(
+        "Documento gerado automaticamente pela plataforma KAMBA. Matriz do comité de talento "
+        "e plano de sucessão — instrumento de apoio à Administração.", rodape))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
+
 def _estilo_tabela(cabecalho: bool = False) -> TableStyle:
     estilos = [
         ("GRID", (0, 0), (-1, -1), 0.5, LINE),

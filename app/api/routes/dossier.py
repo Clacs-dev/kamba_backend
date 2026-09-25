@@ -14,14 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.enums import UserRole
+from app.models.enums import UserRole, SignatureType
 from app.models.dossier import Document, DocumentRead, Signature
+from app.models.onboarding import OnboardingItem
 from app.schemas.dossier import (
     DocumentCreate, DocumentUpdate, DocumentSummary, DocumentDetail,
     DocumentReadReceipt, SignatureCreate, SignatureOut,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.audit import audit
+from app.services.notifications import notify
 
 router = APIRouter(tags=["dossier"])
 
@@ -198,6 +200,48 @@ def sign(
         signature_type=payload.signature_type,
     )
     db.add(sig)
+
+    # Quando o conjunto das três declarações fica completo:
+    #  1. completa o item de acolhimento "Leitura e assinatura das políticas";
+    #  2. notifica o Capital Humano da empresa.
+    assinadas = {s.signature_type for s in
+                 db.query(Signature).filter(Signature.user_id == current_user.id).all()}
+    assinadas.add(payload.signature_type)
+    if assinadas >= set(SignatureType):
+        for item in (
+            db.query(OnboardingItem)
+            .filter(
+                OnboardingItem.company_id == current_user.company_id,
+                OnboardingItem.collaborator_id == current_user.id,
+                OnboardingItem.description.ilike("Leitura e assinatura%"),
+                OnboardingItem.done == False,  # noqa: E712
+            )
+            .all()
+        ):
+            item.done = True
+            audit(db, actor=current_user, action="acolhimento.item_concluido",
+                  detail=f"Item '{item.description}' concluído pela assinatura de adesão.")
+
+        gestores = (
+            db.query(User)
+            .filter(
+                User.company_id == current_user.company_id,
+                User.role == UserRole.CAPITAL_HUMANO,
+            )
+            .all()
+        )
+        for g in gestores:
+            if g.id == current_user.id:
+                continue
+            notify(
+                db, company_id=current_user.company_id, user_id=g.id,
+                title="Adesão assinada",
+                message=f"{current_user.full_name} assinou as políticas e o consentimento de dados.",
+                category="acolhimento", link="/colaboradores",
+            )
+
+    audit(db, actor=current_user, action="adesao.assinada",
+          detail=f"Assinatura '{payload.signature_type.value}' registada.")
     db.commit()
     db.refresh(sig)
     return sig

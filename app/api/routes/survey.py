@@ -33,6 +33,81 @@ MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 MIN_RESPONSES = 5  # limiar de anonimato (secção 6)
 
 
+def _participation_stats(
+    db: Session, company_id: int, survey_id: int
+) -> tuple[int, int, float | None]:
+    """
+    Participação de um pulse, calculada dos dados reais (nunca preenchida à mão):
+    colaboradores que responderam sobre o universo de colaboradores que PODEM
+    responder. A gestão cria/gesta os pulses mas não participa, por isso fica
+    excluída do universo — assim a taxa reflecte quem realmente devia responder.
+    """
+    eligible_ids = (
+        db.query(User.id)
+        .filter(
+            User.company_id == company_id,
+            User.is_active.is_(True),
+            User.role.notin_([r for r in SURVEY_ROLES]),
+        )
+        .scalar_subquery()
+    )
+    universe = (
+        db.query(User)
+        .filter(User.id.in_(eligible_ids))
+        .count()
+    )
+    participation_count = (
+        db.query(SurveyParticipation)
+        .filter(
+            SurveyParticipation.survey_id == survey_id,
+            SurveyParticipation.user_id.in_(eligible_ids),
+        )
+        .count()
+    )
+    rate = (
+        round(participation_count * 100 / universe, 1) if universe else None
+    )
+    return participation_count, universe, rate
+
+
+# Dimensões do pulse que medem a recomendação ("Recomendaria a empresa...").
+RECOMMEND_KEYWORDS = ("recomend", "recommend")
+
+
+def _enps_for_survey(
+    db: Session, survey_id: int
+) -> tuple[int | None, int, int, int]:
+    """
+    eNPS calculado das respostas do pulse (nunca preenchido à mão).
+
+    A pergunta de recomendação (dimensão que contém "recomend") na escala 1–5
+    é mapeada para a lógica clássica 0–10:
+      1–2 → Detrator  |  3 → Neutro  |  4–5 → Promotor
+      eNPS = (Promotores − Detratores) / totais × 100   (−100 .. +100)
+    """
+    responses = (
+        db.query(SurveyResponse)
+        .filter(SurveyResponse.survey_id == survey_id)
+        .all()
+    )
+    promoters = neutrals = detractors = 0
+    for r in responses:
+        ans = json.loads(r.answers)
+        for dim, val in ans.items():
+            brand = dim.strip().lower()
+            if any(k in brand for k in RECOMMEND_KEYWORDS) and isinstance(val, int):
+                if val <= 2:
+                    detractors += 1
+                elif val == 3:
+                    neutrals += 1
+                else:
+                    promoters += 1
+                break  # uma resposta por colaborador
+    total = promoters + neutrals + detractors
+    score = round((promoters - detractors) * 100 / total) if total else None
+    return score, promoters, neutrals, detractors
+
+
 def _get_survey_or_404(db: Session, company_id: int, survey_id: int) -> Survey:
     s = (
         db.query(Survey)
@@ -271,20 +346,10 @@ def get_results(
     )
     count = len(responses)
 
-    # Participação (secção 6): universo de colaboradores ativos, participações
-    # registadas e taxa — calculados, não preenchidos à mão.
-    universe = (
-        db.query(User)
-        .filter(User.company_id == current_user.company_id, User.is_active.is_(True))
-        .count()
-    )
-    participation_count = (
-        db.query(SurveyParticipation)
-        .filter(SurveyParticipation.survey_id == survey.id)
-        .count()
-    )
-    participation_rate = (
-        round(participation_count * 100 / universe, 1) if universe else None
+    # Participação (secção 6): universo de colaboradores que podem responder,
+    # participações registadas e taxa — calculadas dos dados reais, nunca estáticas.
+    participation_count, universe, participation_rate = _participation_stats(
+        db, current_user.company_id, survey.id
     )
 
     if count < MIN_RESPONSES:
@@ -297,6 +362,7 @@ def get_results(
             participation_count=participation_count,
             universe=universe,
             participation_rate=participation_rate,
+            enps_score=0,
         )
 
     # Agregar médias por dimensão.
@@ -314,6 +380,9 @@ def get_results(
         d: round(totals[d] / counts[d], 2)
         for d in dims if counts[d] > 0
     }
+    enps_score, enps_promoters, enps_neutrals, enps_detractors = _enps_for_survey(
+        db, survey.id
+    )
     return SurveyResults(
         survey_id=survey.id,
         response_count=count,
@@ -323,6 +392,10 @@ def get_results(
         participation_count=participation_count,
         universe=universe,
         participation_rate=participation_rate,
+        enps_score=enps_score,
+        enps_promoters=enps_promoters,
+        enps_neutrals=enps_neutrals,
+        enps_detractors=enps_detractors,
     )
 
 
@@ -364,7 +437,33 @@ def get_culture_report(
         .filter(CultureReport.company_id == current_user.company_id)
         .first()
     )
-    return _report_to_out(r)
+    out = _report_to_out(r)
+
+    # Participação calculada automaticamente do pulse mais recente: colaboradores
+    # que responderam vs. universo de quem podia responder. Nunca estática.
+    latest = (
+        db.query(Survey)
+        .filter(Survey.company_id == current_user.company_id)
+        .order_by(Survey.created_at.desc())
+        .first()
+    )
+    if latest is not None:
+        participation_count, universe, participation_rate = _participation_stats(
+            db, current_user.company_id, latest.id
+        )
+        out.participation_count = participation_count
+        out.universe = universe
+        out.participation_rate = participation_rate
+
+        enps_score, enps_promoters, enps_neutrals, enps_detractors = _enps_for_survey(
+            db, latest.id
+        )
+        out.enps_score = enps_score
+        out.enps_promoters = enps_promoters
+        out.enps_neutrals = enps_neutrals
+        out.enps_detractors = enps_detractors
+
+    return out
 
 
 @router.put("/culture-report/data", response_model=CultureReportOut)

@@ -7,7 +7,7 @@ através da coluna company_id, e todas as consultas filtram por ela.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Boolean, DateTime
+from sqlalchemy import String, Boolean, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -25,6 +25,12 @@ class Company(Base):
 
     # NIF — Número de Identificação Fiscal (ver abreviaturas do manual).
     nif: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)
+
+    # Identidade da empresa — exibida nos rodapés de todas as páginas da empresa.
+    vision: Mapped[str | None] = mapped_column(Text, nullable=True)      # visão
+    mission: Mapped[str | None] = mapped_column(Text, nullable=True)     # missão
+    values: Mapped[str | None] = mapped_column(Text, nullable=True)      # valores
+    objectives: Mapped[str | None] = mapped_column(Text, nullable=True)  # objetivos
 
     # Plano de subscrição (Essencial, Empresarial, Corporativo, Institucional).
     # Mantido como texto simples por agora; pode virar Enum quando afinarmos

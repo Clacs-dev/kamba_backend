@@ -20,11 +20,11 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.enums import UserRole, DisciplinaryPhase, DisciplinaryOutcome
+from app.models.enums import UserRole, DisciplinaryPhase, DisciplinaryOutcome, CommitteeRole
 from app.models.disciplinary import DisciplinaryProcess, DisciplinaryCommitteeMember
 from app.schemas.disciplinary import (
     ProcessCreate, ChargeNoteRequest, DefenseRequest, DecisionRequest, ProcessOut,
-    CommitteeSetRequest, CommitteeMemberOut,
+    CommitteeSetRequest, CommitteeMemberOut, CommitteeMemberIn,
 )
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
@@ -80,6 +80,83 @@ def _require_phase(p: DisciplinaryProcess, expected: DisciplinaryPhase):
         )
 
 
+def _next_reference(db: Session, company_id: int) -> str:
+    """Referência sequencial por empresa e ano: PD-AAAA/NNN."""
+    year = _now().year
+    count = (
+        db.query(DisciplinaryProcess.id)
+        .filter(
+            DisciplinaryProcess.company_id == company_id,
+            DisciplinaryProcess.created_at >= datetime(year, 1, 1, tzinfo=timezone.utc),
+        )
+        .count()
+    )
+    return f"PD-{year}/{count + 1:03d}"
+
+
+def _set_committee_assignment(
+    db: Session,
+    process_id: int,
+    company_id: int,
+    accused_id: int,
+    assignments: list[CommitteeMemberIn],
+) -> list[tuple[User, CommitteeRole]]:
+    """
+    Valida e grava os 3 membros (Directores da empresa, nunca o arguido) com
+    os respectivos papéis. Devolve os utilizadores com o papel atribuído.
+    """
+    if accused_id in [a.user_id for a in assignments]:
+        raise HTTPException(
+            status_code=422,
+            detail="O arguido não pode integrar a comissão disciplinar do seu próprio processo.",
+        )
+
+    ids = [a.user_id for a in assignments]
+    membros = (
+        db.query(User)
+        .filter(
+            User.id.in_(ids),
+            User.company_id == company_id,
+            User.role == UserRole.DIRECTOR,
+        )
+        .all()
+    )
+    if len(membros) != 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Os 3 membros da comissão têm de ser colaboradores com perfil Director desta empresa.",
+        )
+
+    papel_por_id = {a.user_id: a.role for a in assignments}
+    com_papel = [(m, papel_por_id[m.id]) for m in membros]
+
+    db.query(DisciplinaryCommitteeMember).filter(
+        DisciplinaryCommitteeMember.process_id == process_id
+    ).delete()
+    for membro, papel in com_papel:
+        db.add(DisciplinaryCommitteeMember(process_id=process_id, user_id=membro.id, role=papel))
+
+    return com_papel
+
+
+def _notify_committee(
+    db: Session, company_id: int, reference: str, com_papel: list[tuple[User, CommitteeRole]], instaurado: bool
+):
+    acao = "designado" if instaurado else "redesignado"
+    nomes = {papel: u.full_name for u, papel in com_papel}
+    for membro, papel in com_papel:
+        notify(
+            db, company_id=company_id, user_id=membro.id,
+            title="Comissão disciplinar",
+            message=(
+                f"Foi {acao} {papel.value} da comissão do processo {reference} "
+                f"({nomes[CommitteeRole.RELATOR]}; {nomes[CommitteeRole.INSTRUTOR]}; "
+                f"{nomes[CommitteeRole.PRESIDENTE]})."
+            ),
+            category="disciplina", link="/disciplina",
+        )
+
+
 def _committee_map(db: Session, process_ids: list[int]) -> dict[int, list[CommitteeMemberOut]]:
     """Membros da comissão de vários processos, numa só query (evita N+1)."""
     if not process_ids:
@@ -93,7 +170,7 @@ def _committee_map(db: Session, process_ids: list[int]) -> dict[int, list[Commit
     result: dict[int, list[CommitteeMemberOut]] = {}
     for member, user in rows:
         result.setdefault(member.process_id, []).append(
-            CommitteeMemberOut(id=user.id, full_name=user.full_name)
+            CommitteeMemberOut(id=user.id, full_name=user.full_name, role=member.role)
         )
     return result
 
@@ -130,20 +207,33 @@ def open_process(
     if accused is None:
         raise HTTPException(status_code=404, detail="Arguido não encontrado nesta empresa.")
 
+    instructor_assignment = next(
+        a for a in payload.committee if a.role == CommitteeRole.INSTRUTOR
+    )
+    reference = _next_reference(db, current_user.company_id)
+
     p = DisciplinaryProcess(
         company_id=current_user.company_id,
         accused_id=payload.accused_id,
-        instructor_id=current_user.id,
-        reference=payload.reference,
+        instructor_id=instructor_assignment.user_id,
+        reference=reference,
         imputed_facts=payload.imputed_facts,
         disciplinary_record=payload.disciplinary_record,
         phase=DisciplinaryPhase.INSTAURACAO,
     )
     db.add(p)
+    db.flush()  # obtém p.id para associar a comissão
+
+    com_papel = _set_committee_assignment(
+        db, p.id, current_user.company_id, p.accused_id, payload.committee
+    )
     audit(db, actor=current_user, action="disciplina.instaurado",
-          detail=f"Processo {p.reference} instaurado contra {accused.full_name}.")
+          detail=f"Processo {p.reference} instaurado contra {accused.full_name}; "
+                 f"comissão: " + ", ".join(f"{u.full_name} ({r.value})" for u, r in com_papel) + ".")
     db.commit()
     db.refresh(p)
+    _notify_committee(db, current_user.company_id, p.reference, com_papel, instaurado=True)
+    db.commit()
     return _process_out(db, p)
 
 
@@ -190,8 +280,9 @@ def set_committee(
     """
     Define (ou substitui) a comissão disciplinar do processo: exactamente 3
     colaboradores com perfil Director, da mesma empresa, que não sejam o
-    próprio arguido. Pode ser chamado enquanto o processo não estiver
-    arquivado.
+    próprio arguido, cada um com papel (relator / instrutor / presidente).
+    O membro com papel instrutor passa a ser o instrutor do processo.
+    Pode ser chamado enquanto o processo não estiver arquivado.
     """
     p = _get_or_404(db, current_user.company_id, process_id)
     if p.phase == DisciplinaryPhase.ARQUIVADO:
@@ -200,38 +291,21 @@ def set_committee(
             detail="Não é possível alterar a comissão de um processo já arquivado.",
         )
 
-    if p.accused_id in payload.member_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="O arguido não pode integrar a comissão disciplinar do seu próprio processo.",
-        )
-
-    membros = (
-        db.query(User)
-        .filter(
-            User.id.in_(payload.member_ids),
-            User.company_id == current_user.company_id,
-            User.role == UserRole.DIRECTOR,
-        )
-        .all()
+    com_papel = _set_committee_assignment(
+        db, p.id, current_user.company_id, p.accused_id, payload.committee
     )
-    if len(membros) != 3:
-        raise HTTPException(
-            status_code=422,
-            detail="Os 3 membros da comissão têm de ser colaboradores com perfil Director desta empresa.",
-        )
-
-    db.query(DisciplinaryCommitteeMember).filter(
-        DisciplinaryCommitteeMember.process_id == p.id
-    ).delete()
-    for membro in membros:
-        db.add(DisciplinaryCommitteeMember(process_id=p.id, user_id=membro.id))
+    instructor_assignment = next(
+        a for a in payload.committee if a.role == CommitteeRole.INSTRUTOR
+    )
+    p.instructor_id = instructor_assignment.user_id
 
     audit(db, actor=current_user, action="disciplina.comissao_definida",
           detail=f"Comissão disciplinar do processo {p.reference} definida: "
-                 + ", ".join(m.full_name for m in membros) + ".")
+                 + ", ".join(f"{u.full_name} ({r.value})" for u, r in com_papel) + ".")
     db.commit()
     db.refresh(p)
+    _notify_committee(db, current_user.company_id, p.reference, com_papel, instaurado=False)
+    db.commit()
     return _process_out(db, p)
 
 

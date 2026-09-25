@@ -11,7 +11,7 @@ Pertence sempre a uma empresa (company_id) — parte do isolamento multi-tenant.
 """
 from datetime import datetime, date, time, timezone
 
-from sqlalchemy import String, Text, DateTime, Date, Time, ForeignKey, Enum, UniqueConstraint, JSON
+from sqlalchemy import String, Text, DateTime, Date, Time, ForeignKey, Enum, UniqueConstraint, JSON, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -67,6 +67,8 @@ class EmployeeProfile(Base):
     habilitacoes: Mapped[str | None] = mapped_column(String(200), nullable=True)  # habilitações literárias (ex.: Ensino Médio, Licenciatura)
     university: Mapped[str | None] = mapped_column(String(200), nullable=True)    # universidade de formação
     course: Mapped[str | None] = mapped_column(String(200), nullable=True)        # curso / habilitação académica
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)          # data de nascimento (aniversários)
+    birthday_notified_year: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ano em que o aniversário já foi celebrado
     cv: Mapped[str | None] = mapped_column(Text, nullable=True)                   # CV livre — o RH digitaliza aqui
     education: Mapped[list | None] = mapped_column(JSON, nullable=True)           # formação académica: [{nivel, ano_inicio, ano_fim, pais, instituicao, curso, areas}, ...]
     experience: Mapped[list | None] = mapped_column(JSON, nullable=True)          # experiência de trabalho: [{onde, ano_inicio, ano_fim, funcao}, ...]

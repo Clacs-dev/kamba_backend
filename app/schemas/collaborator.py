@@ -27,6 +27,7 @@ class CollaboratorRowOut(BaseModel):
     created_at: datetime
 
     # Ficha profissional (EmployeeProfile).
+    employee_number: str | None = None
     job_title: str | None = None
     job_category: str | None = None
     department: str | None = None
@@ -88,4 +89,16 @@ class CollaboratorCreatedOut(BaseModel):
     email: str
     role: str
     collaborator: CollaboratorOut
+    temporary_password: str
+
+
+class PasswordResetOut(BaseModel):
+    """
+    Resposta ao redefinir a password de um colaborador.
+    A nova password temporária é devolvida uma única vez (não é armazenada em
+    texto simples) e o colaborador é obrigado a trocá-la no primeiro acesso.
+    """
+    id: int
+    full_name: str
+    email: str
     temporary_password: str

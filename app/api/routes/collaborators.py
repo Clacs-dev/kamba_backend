@@ -28,6 +28,7 @@ from app.schemas.collaborator import (
     CollaboratorOut,
     CollaboratorCreatedOut,
     CollaboratorRowOut,
+    PasswordResetOut,
 )
 from app.api.deps import require_roles, get_current_user
 
@@ -144,6 +145,7 @@ def _enriquecer_colaboradores(db: Session, current_user: User, usuarios: list[Us
                 role=u.role,
                 is_active=u.is_active,
                 created_at=u.created_at,
+                employee_number=p.employee_number if p else None,
                 job_title=p.job_title if p else None,
                 job_category=p.job_category if p else None,
                 department=p.department if p else None,
@@ -455,6 +457,65 @@ def reactivate_collaborator(
     return collaborator
 
 
+@router.post("/{collaborator_id}/reset-password", response_model=PasswordResetOut)
+def reset_password(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Gera uma nova password temporária para um colaborador da empresa.
+
+    Serve para o caso em que o email de boas-vindas não chegou (SMTP não
+    configurado, email inválido) ou o colaborador perdeu a password inicial.
+    A nova password é devolvida uma única vez na resposta — o gestor entrega-a
+    em mãos — e o colaborador é obrigado a trocá-la no primeiro acesso
+    (must_change_password=True).
+    """
+    collaborator = _get_company_user_or_404(
+        db, current_user.company_id, collaborator_id
+    )
+    if collaborator.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não pode redefinir a sua própria password por aqui. Use a troca de password.",
+        )
+    if not collaborator.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não é possível redefinir a password de uma conta inactiva.",
+        )
+
+    temp_password = secrets.token_urlsafe(9)  # ~12 caracteres legíveis
+
+    collaborator.hashed_password = hash_password(temp_password)
+    collaborator.must_change_password = True
+    db.commit()
+    db.refresh(collaborator)
+
+    # Tenta reenviar o email de boas-vindas; se falhar, o gestor entrega a
+    # password em mãos (a resposta da API continua a trazê-la).
+    try:
+        from app.services.email_service import email_boas_vindas
+        from app.models.company import Company
+        empresa = db.query(Company).filter(Company.id == collaborator.company_id).first()
+        email_boas_vindas(
+            nome=collaborator.full_name,
+            email=collaborator.email,
+            senha_temporaria=temp_password,
+            empresa=empresa.name if empresa else "",
+        )
+    except Exception as e:
+        print(f"[EMAIL] Não foi possível reenviar boas-vindas: {e}")
+
+    return PasswordResetOut(
+        id=collaborator.id,
+        full_name=collaborator.full_name,
+        email=collaborator.email,
+        temporary_password=temp_password,
+    )
+
+
 # ---------- Documentos anexados do colaborador (contrato secção 2) ----------
 
 from fastapi import UploadFile, File, Form
@@ -763,6 +824,247 @@ def gerar_cv_pdf(
     buf.seek(0)
 
     filename = f"CV_{(user.full_name or 'colaborador').replace(' ', '_')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+# ---------- Ficha profissional completa em PDF ----------
+
+@router.get("/{collaborator_id}/ficha-pdf")
+def gerar_ficha_pdf(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Gera a Ficha Profissional completa do colaborador em PDF.
+
+    Documento organizado e pronto a imprimir: identificação e vínculo,
+    formação académica, experiência profissional, cursos e certificações e o
+    conteúdo de CV / notas. Acede quem gere pessoas (CH/Administração/Admin)
+    ou o próprio colaborador (a sua própria ficha).
+    """
+    from io import BytesIO
+    from datetime import date
+    from html import escape
+    from fastapi.responses import StreamingResponse
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.colors import HexColor
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from app.models.company import Company
+    from app.models.employee_profile import EmployeeProfile
+
+    # Permissão: gestão de pessoas ou o próprio colaborador.
+    if current_user.id != collaborator_id and current_user.role not in MANAGE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Não tem permissão para ver a ficha deste colaborador.",
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
+        .first()
+    )
+    if user is None:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+
+    profile = (
+        db.query(EmployeeProfile)
+        .filter(EmployeeProfile.user_id == collaborator_id)
+        .first()
+    )
+    empresa = db.query(Company).filter(Company.id == current_user.company_id).first()
+
+    def limpar(texto) -> str:
+        return escape(str(texto)) if texto is not None else ""
+
+    def fmt_data(v) -> str:
+        if not v:
+            return "—"
+        if hasattr(v, "strftime"):
+            try:
+                return v.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+        return str(v)
+
+    def rotulo_vinculo(v) -> str:
+        if not v:
+            return "—"
+        mapa = {
+            "efetivo": "Por tempo indeterminado",
+            "termo_certo": "Tempo determinado",
+            "termo_incerto": "Tempo determinado",
+            "estagio": "Estágio",
+            "prestacao_servicos": "Prestação de serviços",
+        }
+        return mapa.get(str(v), str(v))
+
+    def get_(campo, padrao="—"):
+        if profile is None or getattr(profile, campo, None) is None:
+            return padrao
+        return limpar(getattr(profile, campo))
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm,
+                            topMargin=1.8 * cm, bottomMargin=1.8 * cm)
+    styles = getSampleStyleSheet()
+
+    titulo_estilo = ParagraphStyle("Titulo", parent=styles["Title"], fontSize=19,
+                                   textColor=HexColor("#14532d"), spaceAfter=1)
+    sub_estilo = ParagraphStyle("Sub", parent=styles["Normal"], fontSize=11.5,
+                                textColor=HexColor("#1e3a5f"), spaceAfter=2)
+    cab_estilo = ParagraphStyle("Cab", parent=styles["Normal"], fontSize=9,
+                                textColor=HexColor("#9aa7b0"), alignment=TA_CENTER, spaceAfter=0)
+    sec_estilo = ParagraphStyle("Sec", parent=styles["Heading2"], fontSize=12.5,
+                                textColor=HexColor("#14532d"), spaceBefore=14, spaceAfter=6)
+    rot_estilo = ParagraphStyle("Rot", parent=styles["Normal"], fontSize=9,
+                                textColor=HexColor("#666666"))
+    corpo_estilo = ParagraphStyle("Corpo", parent=styles["Normal"], fontSize=10.5, leading=14.5)
+    pe_estilo = ParagraphStyle("Pe", parent=styles["Normal"], fontSize=9,
+                               textColor=HexColor("#9aa7b0"), spaceBefore=16, alignment=TA_CENTER)
+
+    elems = []
+
+    # Cabeçalho do documento.
+    elems.append(Paragraph("Ficha Profissional", titulo_estilo))
+    elems.append(Paragraph(limpar(user.full_name) or "Colaborador", sub_estilo))
+    elems.append(Paragraph(empresa.name if empresa and empresa.name else "KAMBA", cab_estilo))
+    elems.append(Paragraph(f"Impresso em {date.today().strftime('%d/%m/%Y')}", cab_estilo))
+    elems.append(Spacer(1, 6))
+
+    # 1. Identificação e vínculo.
+    elems.append(Paragraph("1. Identificação e vínculo", sec_estilo))
+    dados = [
+        ("Nome completo", limpar(user.full_name) or "—"),
+        ("Email", limpar(user.email) or "—"),
+        ("N.º de colaborador", get_("employee_number")),
+        ("Data de admissão", fmt_data(profile.admission_date) if profile else "—"),
+        ("Vínculo", rotulo_vinculo(profile.contract_type) if profile else "—"),
+        ("Término do contrato", fmt_data(profile.contract_end_date) if profile else "—"),
+        ("Categoria", get_("job_category")),
+        ("Cargo", get_("job_title")),
+        ("Direção", get_("department")),
+        ("Local de trabalho", get_("workplace")),
+        ("Horário", get_("work_schedule")),
+        ("Nacionalidade", get_("nationality")),
+        ("Habilitações literárias", get_("habilitacoes")),
+        ("Universidade", get_("university")),
+        ("Curso", get_("course")),
+    ]
+    t = Table(
+        [[Paragraph(r, rot_estilo), Paragraph(v, corpo_estilo)] for r, v in dados],
+        colWidths=[5.2 * cm, 10.8 * cm],
+    )
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, HexColor("#e5e7eb")),
+    ]))
+    elems.append(t)
+
+    def bloco_educacao():
+        if not (profile and profile.education and isinstance(profile.education, list)):
+            return
+        elems.append(Paragraph("2. Formação académica", sec_estilo))
+        for e in profile.education:
+            if not isinstance(e, dict):
+                continue
+            titulo = limpar(e.get("curso") or e.get("nivel") or "Formação")
+            linha = f"<b>{titulo}</b>"
+            if e.get("nivel") and e.get("curso"):
+                linha += f" &nbsp;·&nbsp; {limpar(str(e['nivel']))}"
+            detalhes = []
+            if e.get("instituicao"):
+                detalhes.append(limpar(str(e["instituicao"])))
+            periodo = []
+            if e.get("ano_inicio"):
+                periodo.append(str(e["ano_inicio"]))
+            if e.get("ano_fim"):
+                periodo.append(str(e["ano_fim"]))
+            if periodo:
+                detalhes.append("(" + " – ".join(periodo) + ")")
+            if e.get("pais"):
+                detalhes.append(limpar(str(e["pais"])))
+            if detalhes:
+                linha += "<br/><font size='9' color='#666666'>" + " &nbsp;·&nbsp; ".join(detalhes) + "</font>"
+            if e.get("areas"):
+                linha += f"<br/><font size='9' color='#333333'>Áreas: {limpar(str(e['areas']))}</font>"
+            elems.append(Paragraph(linha, corpo_estilo))
+            elems.append(Spacer(1, 5))
+
+    def bloco_experiencia():
+        if not (profile and profile.experience and isinstance(profile.experience, list) and len(profile.experience) > 0):
+            return
+        elems.append(Paragraph("3. Experiência profissional", sec_estilo))
+        for x in profile.experience:
+            if not isinstance(x, dict):
+                continue
+            partes = []
+            if x.get("onde"):
+                partes.append(f"<b>{limpar(str(x['onde']))}</b>")
+            if x.get("funcao"):
+                partes.append(limpar(str(x["funcao"])))
+            periodo = []
+            if x.get("ano_inicio"):
+                periodo.append(str(x["ano_inicio"]))
+            if x.get("ano_fim"):
+                periodo.append(str(x["ano_fim"]))
+            if periodo:
+                partes.append("(" + " – ".join(periodo) + ")")
+            elems.append(Paragraph(" &nbsp;·&nbsp; ".join([p for p in partes if p]) or "—", corpo_estilo))
+            elems.append(Spacer(1, 5))
+
+    def bloco_certificacoes():
+        if not (profile and profile.certifications and isinstance(profile.certifications, list) and len(profile.certifications) > 0):
+            return
+        elems.append(Paragraph("4. Cursos e certificações", sec_estilo))
+        for c in profile.certifications:
+            if not isinstance(c, dict):
+                continue
+            linha = f"<b>{limpar(c.get('nome')) or 'Certificação'}</b>"
+            detalhes = []
+            if c.get("instituicao"):
+                detalhes.append(limpar(str(c["instituicao"])))
+            if c.get("data"):
+                detalhes.append(str(c["data"]))
+            if c.get("validade"):
+                detalhes.append("válido até " + str(c["validade"]))
+            if detalhes:
+                linha += "<br/><font size='9' color='#666666'>" + " &nbsp;·&nbsp; ".join(detalhes) + "</font>"
+            elems.append(Paragraph(linha, corpo_estilo))
+            elems.append(Spacer(1, 5))
+
+    def bloco_cv():
+        if not (profile and profile.cv and str(profile.cv).strip()):
+            return
+        elems.append(Paragraph("5. CV e notas", sec_estilo))
+        for linha_cv in str(profile.cv).split("\n"):
+            elems.append(Paragraph(limpar(linha_cv) or "&nbsp;", corpo_estilo))
+
+    bloco_educacao()
+    bloco_experiencia()
+    bloco_certificacoes()
+    bloco_cv()
+
+    if not dados and not profile:
+        elems.append(Paragraph("Ficha sem dados preenchidos.", corpo_estilo))
+
+    elems.append(Paragraph(f"Ficha gerada pela plataforma KAMBA — {empresa.name if empresa else ''}".strip(),
+                           pe_estilo))
+
+    doc.build(elems)
+    buf.seek(0)
+
+    filename = f"Ficha_{(user.full_name or 'colaborador').replace(' ', '_')}.pdf"
     return StreamingResponse(
         buf,
         media_type="application/pdf",

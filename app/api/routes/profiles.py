@@ -25,6 +25,27 @@ router = APIRouter(tags=["profiles"])
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 
 
+def _proximo_numero(db: Session, company_id: int) -> str:
+    """Próximo número mecanográfico (sequencial, 4 dígitos) da empresa."""
+    numeros = (
+        db.query(EmployeeProfile.employee_number)
+        .filter(
+            EmployeeProfile.company_id == company_id,
+            EmployeeProfile.employee_number.isnot(None),
+        )
+        .all()
+    )
+    maior = 0
+    for (num,) in numeros:
+        try:
+            n = int(str(num).lstrip("0") or "0")
+            if n > maior:
+                maior = n
+        except (ValueError, TypeError):
+            continue
+    return f"{maior + 1:04d}"
+
+
 def _get_or_create_profile(db: Session, user: User) -> EmployeeProfile:
     """Devolve a ficha do utilizador, criando-a vazia se ainda não existir."""
     profile = (
@@ -33,7 +54,11 @@ def _get_or_create_profile(db: Session, user: User) -> EmployeeProfile:
         .first()
     )
     if profile is None:
-        profile = EmployeeProfile(user_id=user.id, company_id=user.company_id)
+        profile = EmployeeProfile(
+            user_id=user.id,
+            company_id=user.company_id,
+            employee_number=_proximo_numero(db, user.company_id),
+        )
         db.add(profile)
         db.commit()
         db.refresh(profile)
@@ -151,7 +176,7 @@ def update_collaborator_profile(
     return profile
 
 
-# ---------- Foto do colaborador (CH carrega/modifica/remove) ----------
+# ---------- Foto do colaborador (o próprio ou CH/Administração/Admin) ----------
 
 from fastapi import UploadFile, File, Form
 from app.services.cloudinary_upload import upload_file as _cloud_upload
@@ -159,14 +184,28 @@ from app.services.cloudinary_upload import upload_file as _cloud_upload
 _ALLOWED_PHOTO_EXT = (".jpg", ".jpeg", ".png", ".webp")
 
 
+def _pode_gerir_foto(
+    collaborator_id: int,
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """O próprio colaborador (portal próprio) ou CH/Administração/Admin (outros)."""
+    if current_user.id != collaborator_id:
+        if current_user.role not in MANAGE_ROLES:
+            raise HTTPException(
+                status_code=403,
+                detail="Só o próprio colaborador ou o Capital Humano pode gerir a foto.",
+            )
+    return current_user
+
+
 @router.post("/collaborators/{collaborator_id}/photo", response_model=ProfileOut)
 async def upload_collaborator_photo(
     collaborator_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+    current_user: User = Depends(_pode_gerir_foto),
     file: UploadFile = File(...),
 ):
-    """O Capital Humano carrega (ou substitui) a foto do colaborador."""
+    """O colaborador (portal próprio) ou o CH carrega (ou substitui) a foto."""
     nome = (file.filename or "")
     ext = nome.lower().rsplit(".", 1)[-1] if "." in nome else ""
     if f".{ext}" not in _ALLOWED_PHOTO_EXT:
@@ -202,9 +241,9 @@ async def upload_collaborator_photo(
 def delete_collaborator_photo(
     collaborator_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+    current_user: User = Depends(_pode_gerir_foto),
 ):
-    """O Capital Humano remove a foto do colaborador (volta a mostrar iniciais)."""
+    """O colaborador (portal próprio) ou o CH remove a foto (volta a mostrar iniciais)."""
     collaborator = (
         db.query(User)
         .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
