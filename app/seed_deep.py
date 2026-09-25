@@ -11,9 +11,10 @@ Princípios:
 - **Aditivo e idempotente**: nunca apaga nem sobrescreve dados existentes;
   cada inserção é precedida de verificação pela chave natural. Pode correr
   vezes seguidas sem duplicar nada.
-- **Não cria utilizadores**: usa as contas já existentes na empresa (as do
-  `seed_demo.py`). Se a empresa não tiver contas, falha com uma mensagem
-  clara a dizer para correr primeiro o `seed_demo.py`.
+- **Não cria utilizadores por si**: usa as contas já existentes na empresa (as do
+  `seed_demo.py`). Se a empresa não tiver contas, ou se `--confirm-demo`/a
+  semente de arranque forem autorizados com password, completa-as com o
+  `seed_demo.py` (que também garante ficha aos utilizadores criados à mão).
 - **Formato fiel**: as respostas de avaliação são gravadas no contrato real
   (`objectives`/`competencies`/`values`) e as pontuações são calculadas pelo
   próprio motor da aplicação (`compute_score`) — nunca escritas à mão. Assim,
@@ -22,14 +23,21 @@ Princípios:
   execuções produzam exatamente o mesmo conjunto de dados.
 
 Uso:
+    python -m app.seed_deep --listar-empresas
     python -m app.seed_deep --company-name "Minha Empresa" --dry-run
     DEMO_PASSWORD=... python -m app.seed_deep --company-name "Minha Empresa" --confirm-demo
+
+No arranque da aplicação, a mesma semente corre sozinha se definir
+`DEEP_SEED_COMPANY` (nome ou ID) no ambiente; num ambiente de demonstração com
+`DEMO_PASSWORD` definido, enriquece a empresa que já tem mais utilizadores.
 """
 import argparse
 import json
 import os
 import random
 from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import func
 
 from app.api.routes.evaluation_settings import get_or_create_settings
 from app.core.database import Base, SessionLocal, engine
@@ -222,12 +230,34 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description="Semeia dados de demonstração profundos e coerentes numa empresa KAMBA"
     )
-    alvo = parser.add_mutually_exclusive_group(required=True)
+    alvo = parser.add_mutually_exclusive_group()
     alvo.add_argument("--company-id", type=int)
     alvo.add_argument("--company-name")
+    parser.add_argument(
+        "--listar-empresas",
+        action="store_true",
+        help="lista as empresas da base (id, nome e nº de utilizadores) e sai",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--confirm-demo", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.listar_empresas and args.company_id is None and not args.company_name:
+        parser.error("indique --company-id, --company-name ou --listar-empresas")
+    return args
+
+
+def _listar_empresas(db):
+    """Mostra as empresas existentes para se saber qual é o alvo da semente."""
+    print(f"{'id':>4}  {'utilizadores':>13}  nome")
+    print("-" * 60)
+    for empresa, total in (
+        db.query(Company, func.count(User.id).label("total"))
+        .outerjoin(User, User.company_id == Company.id)
+        .group_by(Company.id)
+        .order_by(Company.id)
+        .all()
+    ):
+        print(f"{empresa.id:>4}  {total:>13}  {empresa.name}")
 
 
 def _find_company(db, company_id=None, company_name=None):
@@ -1862,6 +1892,14 @@ def main():
     password = os.getenv("DEMO_PASSWORD") or os.getenv("DEEP_SEED_PASSWORD")
     if password and not 8 <= len(password) <= 72:
         raise SystemExit("DEMO_PASSWORD deve ter entre 8 e 72 caracteres.")
+    if args.listar_empresas:
+        Base.metadata.create_all(bind=engine)
+        db = SessionLocal()
+        try:
+            _listar_empresas(db)
+        finally:
+            db.close()
+        return
     if args.dry_run:
         Base.metadata.create_all(bind=engine)
         ensure_schema_columns()
