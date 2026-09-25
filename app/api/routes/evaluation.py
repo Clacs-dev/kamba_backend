@@ -68,7 +68,7 @@ def _notify_evaluation(db: Session, ev, title: str, message: str,
         notify(
             db, company_id=ev.company_id, user_id=uid,
             title=title, message=message,
-            category="avaliacao", link=f"/evaluations/{ev.id}",
+            category="avaliacao", link="/avaliacoes",
         )
 
 
@@ -286,7 +286,7 @@ def create_evaluation(
         db, company_id=ev.company_id, user_id=ev.collaborator_id,
         title="Autoavaliação disponível",
         message="Foi iniciada a sua avaliação de desempenho. Preencha a sua autoavaliação.",
-        category="avaliacao", link=f"/evaluations/{ev.id}",
+        category="avaliacao", link="/avaliacoes",
     )
     db.commit()
     return ev
@@ -375,7 +375,7 @@ def create_evaluations_by_direction(
             db, company_id=company_id, user_id=m.id,
             title="Autoavaliação disponível",
             message="Foi iniciada a sua avaliação de desempenho. Preencha a sua autoavaliação.",
-            category="avaliacao", link=f"/evaluations/{ev.id}",
+            category="avaliacao", link="/avaliacoes",
         )
 
     db.commit()

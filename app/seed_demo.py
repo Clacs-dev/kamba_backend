@@ -1062,6 +1062,66 @@ def _summary(db, company):
     print("Dados de demonstração concluídos.")
 
 
+def _garantir_ficha(db, company, user, index=50):
+    """
+    Cria uma ficha minima para um utilizador criado a mao (que nao veio do
+    build_specs), para que os seeds e os modulos que dependem do cargo,
+    departamento e categoria nao falhem.
+    """
+    profile = _profile_for(db, user, company)
+    if not profile.employee_number:
+        profile.employee_number = _next_employee_number(db, company.id)
+    if not profile.job_title:
+        profile.job_title = "Colaborador"
+    if not profile.department:
+        profile.department = "Operações"
+    if not profile.job_category:
+        profile.job_category = (
+            "Dirigente" if user.role == UserRole.DIRECTOR
+            else "Técnico" if user.role == UserRole.COLABORADOR
+            else "Gestão"
+        )
+    if not profile.admission_date:
+        profile.admission_date = _date_for_index(index, 2018)
+    if not profile.situation_tags:
+        profile.situation_tags = "Ativo"
+    db.flush()
+    return profile
+
+
+def semear_empresa(
+    db,
+    company,
+    password,
+    skip_business_data=False,
+    include_platform_admin=False,
+    keep_existing_passwords=False,
+):
+    """
+    Cria/atualiza contas, perfis e dados de negocio de demonstracao numa empresa.
+    Devolve a lista de (spec, user) para poderem ser reutilizados por outros
+    seeds sem voltar a consultar a base.
+    """
+    _fill_company(company)
+    shifts = _ensure_shifts(db, company)
+    password_hash = hash_password(password)
+    accounts = []
+    for spec in build_specs(include_platform_admin):
+        user, _ = _upsert_user(db, company, spec, password_hash, not keep_existing_passwords)
+        _populate_profile(db, user, company, spec, shifts)
+        accounts.append((spec, user))
+    # Utilizadores ja existentes na empresa (criados a mao) tambem ficam com ficha.
+    for indice, user in enumerate(
+        db.query(User).filter(User.company_id == company.id).order_by(User.id).all(), start=50
+    ):
+        if user.profile is None:
+            _garantir_ficha(db, company, user, indice)
+    db.flush()
+    if not skip_business_data:
+        _seed_business_data(db, company, accounts)
+    return accounts
+
+
 def main():
     args = _parse_args()
     password = os.getenv("DEMO_PASSWORD")
@@ -1081,17 +1141,14 @@ def main():
             print(f"Empresa encontrada: {company.name} (ID {company.id})")
             print("Perfis a criar: 20 colaboradores, 5 directores, 1 Capital Humano, 1 Comissão e 1 Administração.")
             return
-        _fill_company(company)
-        shifts = _ensure_shifts(db, company)
-        password_hash = hash_password(password)
-        accounts = []
-        for spec in build_specs(args.include_platform_admin):
-            user, _ = _upsert_user(db, company, spec, password_hash, not args.keep_existing_passwords)
-            _populate_profile(db, user, company, spec, shifts)
-            accounts.append((spec, user))
-        db.flush()
-        if not args.skip_business_data:
-            _seed_business_data(db, company, accounts)
+        semear_empresa(
+            db,
+            company,
+            password,
+            skip_business_data=args.skip_business_data,
+            include_platform_admin=args.include_platform_admin,
+            keep_existing_passwords=args.keep_existing_passwords,
+        )
         db.commit()
         _summary(db, company)
     except Exception:

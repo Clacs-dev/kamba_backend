@@ -329,7 +329,7 @@ def issue_charge_note(
         db, company_id=p.company_id, user_id=p.accused_id,
         title="Nota de culpa",
         message=f"Foi emitida uma nota de culpa no seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento; tem 10 dias úteis para apresentar defesa escrita.",
-        category="disciplina", link=f"/disciplinary/{p.id}",
+        category="disciplina", link="/disciplina",
     )
     audit(db, actor=current_user, action="disciplina.nota_culpa",
           detail=f"Nota de culpa emitida no processo {p.reference} "
@@ -409,7 +409,7 @@ def issue_decision(
         db, company_id=p.company_id, user_id=p.accused_id,
         title="Decisão disciplinar",
         message="Foi emitida a decisão do seu processo disciplinar. Deve lê-la e assinar a tomada de conhecimento.",
-        category="disciplina", link=f"/disciplinary/{p.id}",
+        category="disciplina", link="/disciplina",
     )
     audit(db, actor=current_user, action="disciplina.decisao",
           detail=f"Decisão emitida no processo {p.reference}.")

@@ -316,7 +316,7 @@ def approve_plan(
             db, company_id=plan.company_id, user_id=ch.id,
             title="Plano de formação aprovado",
             message=f"O plano '{plan.name}' foi aprovado pela Administração. Pode iniciar a execução.",
-            category="formacao", link=f"/training/plans/{plan.id}",
+            category="formacao", link="/formacao",
         )
     audit(db, actor=current_user, action="formacao.plano_aprovado",
           detail=f"Plano de formação '{plan.name}' aprovado.")

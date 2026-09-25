@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # --- Google Gemini (IA) ---
     GEMINI_API_KEY: str | None = None
 
+    # --- Semente de dados de demonstracao ---
+    # Nome (ou ID) da empresa a enrichcer com dados realistas no arranque.
+    # Vazio = desligado. Como a semente e idempotente, pode ficar definida sem
+    # risco de duplicar dados a cada deploy.
+    DEEP_SEED_COMPANY: str | None = None
+    # Password de acesso quando a empresa ainda nao tem utilizadores de demo.
+    DEEP_SEED_PASSWORD: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
