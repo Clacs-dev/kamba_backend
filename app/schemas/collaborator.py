@@ -60,6 +60,7 @@ class CollaboratorCreate(BaseModel):
 class CollaboratorUpdate(BaseModel):
     """Campos editáveis de um colaborador. Todos opcionais (atualização parcial)."""
     full_name: str | None = Field(default=None, min_length=2, max_length=200)
+    email: EmailStr | None = None
     role: UserRole | None = None
     is_active: bool | None = None
 

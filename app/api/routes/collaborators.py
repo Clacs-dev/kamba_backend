@@ -15,6 +15,7 @@ import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -409,10 +410,38 @@ def update_collaborator(
     )
 
     data = payload.model_dump(exclude_unset=True)
+    if "email" in data:
+        new_email = data["email"]
+        if new_email is None:
+            raise HTTPException(status_code=422, detail="O email não pode ser vazio.")
+        new_email = str(new_email).strip().lower()
+        email_exists = (
+            db.query(User)
+            .filter(
+                User.company_id == current_user.company_id,
+                func.lower(User.email) == new_email,
+                User.id != collaborator.id,
+            )
+            .first()
+        )
+        if email_exists is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Já existe um colaborador com este email nesta empresa.",
+            )
+        data["email"] = new_email
+
     for field, value in data.items():
         setattr(collaborator, field, value)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Já existe um colaborador com este email nesta empresa.",
+        )
     db.refresh(collaborator)
     return collaborator
 
