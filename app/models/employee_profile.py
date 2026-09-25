@@ -69,6 +69,11 @@ class EmployeeProfile(Base):
     course: Mapped[str | None] = mapped_column(String(200), nullable=True)        # curso / habilitação académica
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)          # data de nascimento (aniversários)
     birthday_notified_year: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ano em que o aniversário já foi celebrado
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)       # morada (usada no Curriculum Vitae)
+    phone: Mapped[str | None] = mapped_column(String(80), nullable=True)          # telefone(s)
+    languages: Mapped[list | None] = mapped_column(JSON, nullable=True)           # idiomas: [{nome, fala, escreve, le}, ...]
+    social_skills: Mapped[str | None] = mapped_column(Text, nullable=True)        # aptidões e competências sociais
+    technical_skills: Mapped[str | None] = mapped_column(Text, nullable=True)     # aptidões e competências técnicas
     cv: Mapped[str | None] = mapped_column(Text, nullable=True)                   # CV livre — o RH digitaliza aqui
     education: Mapped[list | None] = mapped_column(JSON, nullable=True)           # formação académica: [{nivel, ano_inicio, ano_fim, pais, instituicao, curso, areas}, ...]
     experience: Mapped[list | None] = mapped_column(JSON, nullable=True)          # experiência de trabalho: [{onde, ano_inicio, ano_fim, funcao}, ...]

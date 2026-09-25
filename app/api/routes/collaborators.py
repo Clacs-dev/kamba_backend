@@ -702,7 +702,13 @@ def change_role(
     return CollaboratorOut.model_validate(collaborator)
 
 
-# ---------- CV em PDF ----------
+# ---------- CV em PDF (Modelo Europeu de Curriculum Vitae) ----------
+
+MESES_PT = (
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+)
+
 
 @router.get("/{collaborator_id}/cv-pdf")
 def gerar_cv_pdf(
@@ -710,18 +716,23 @@ def gerar_cv_pdf(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*MANAGE_ROLES)),
 ):
-    """Gera o CV do colaborador em formato PDF a partir da ficha profissional."""
+    """Gera o Curriculum Vitae do colaborador no layout do Modelo Europeu."""
     from io import BytesIO
+    from datetime import date
+    from html import escape
     from fastapi.responses import StreamingResponse
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
-    from reportlab.lib.colors import HexColor
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+    from reportlab.platypus import (
+        BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle,
+        Flowable, Image as ReportImage,
+    )
+    from app.models.company import Company
     from app.models.employee_profile import EmployeeProfile
+    from app.services.cloudinary_upload import fetch_image
 
-    # Buscar o utilizador e a ficha.
     user = (
         db.query(User)
         .filter(User.id == collaborator_id, User.company_id == current_user.company_id)
@@ -735,121 +746,331 @@ def gerar_cv_pdf(
         .filter(EmployeeProfile.user_id == collaborator_id)
         .first()
     )
+    empresa = (
+        db.query(Company)
+        .filter(Company.id == current_user.company_id)
+        .first()
+    )
 
-    # Montar o PDF.
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm,
-                            topMargin=2 * cm, bottomMargin=2 * cm)
-    styles = getSampleStyleSheet()
+    # --- Geometria do formulário (medidas do original em A4) ---
+    marg_esq, marg_dir = 1.3 * cm, 1.6 * cm
+    larg_rotulo, vao, larg_valor = 4.9 * cm, 0.8 * cm, 12.4 * cm
+    larg_total = larg_rotulo + vao + larg_valor
 
-    titulo_estilo = ParagraphStyle("Titulo", parent=styles["Title"],
-                                    fontSize=18, textColor=HexColor("#1e3a5f"),
-                                    spaceAfter=6)
-    sub_estilo = ParagraphStyle("Sub", parent=styles["Normal"],
-                                 fontSize=11, textColor=HexColor("#4a6fa5"),
-                                 spaceAfter=12)
-    sec_estilo = ParagraphStyle("Sec", parent=styles["Heading2"],
-                                 fontSize=12, textColor=HexColor("#1e3a5f"),
-                                 spaceBefore=14, spaceAfter=6)
-    corpo_estilo = ParagraphStyle("Corpo", parent=styles["Normal"],
-                                   fontSize=10, leading=14)
-    small_estilo = ParagraphStyle("Small", parent=styles["Normal"],
-                                   fontSize=9, textColor=HexColor("#666666"), leading=12)
+    est_rotulo = ParagraphStyle(
+        "Rotulo", fontName="Helvetica", fontSize=10, leading=11.5,
+        alignment=TA_RIGHT, spaceAfter=0,
+    )
+    est_valor = ParagraphStyle(
+        "Valor", fontName="Helvetica", fontSize=10, leading=11.5,
+        alignment=TA_LEFT, spaceAfter=0,
+    )
+    est_valor_nome = ParagraphStyle(
+        "ValorNome", parent=est_valor, fontName="Helvetica-Bold", fontSize=11,
+    )
+    est_secao = ParagraphStyle(
+        "Secao", fontName="Helvetica-Bold", fontSize=9.5, leading=12.5,
+        alignment=TA_LEFT, spaceAfter=0,
+    )
+    est_sub = ParagraphStyle(
+        "SubSecao", fontName="Helvetica-BoldOblique", fontSize=11, leading=13,
+        alignment=TA_CENTER, spaceAfter=0,
+    )
+    est_livre = ParagraphStyle(
+        "Livre", fontName="Helvetica", fontSize=10, leading=11.5, alignment=TA_LEFT,
+    )
+    est_idioma_cab = ParagraphStyle(
+        "IdiomaCab", fontName="Helvetica-Bold", fontSize=10, leading=12, alignment=TA_LEFT,
+    )
 
-    elems = []
+    def para(texto, estilo=est_valor):
+        limpo = (texto or "").strip()
+        return Paragraph(escape(limpo or "—").replace("\n", "<br/>"), estilo)
 
-    # Cabeçalho.
-    elems.append(Paragraph(user.full_name or "Colaborador", titulo_estilo))
-    if user.email:
-        elems.append(Paragraph(user.email, sub_estilo))
-    elems.append(Spacer(1, 6))
+    def cabecalho_secao(titulo):
+        # Como no original: primeira letra maior, restante em corpo menor.
+        return Paragraph(
+            f'<font size="12">{escape(titulo[0])}</font>'
+            f'<font size="9.5">{escape(titulo[1:])}</font>',
+            est_secao,
+        )
 
-    # Dados profissionais.
-    dados: list[list[str]] = []
-    if profile:
-        if profile.job_title:
-            dados.append(["Cargo", profile.job_title])
-        if profile.job_category:
-            dados.append(["Categoria", profile.job_category])
-        if profile.department:
-            dados.append(["Direção", profile.department])
-        if profile.workplace:
-            dados.append(["Local", profile.workplace])
-        if profile.admission_date:
-            dados.append(["Admissão", str(profile.admission_date)])
-        if profile.contract_type:
-            dados.append(["Vínculo", profile.contract_type.value if hasattr(profile.contract_type, "value") else str(profile.contract_type)])
-        if profile.contract_end_date:
-            dados.append(["Término do contrato", str(profile.contract_end_date)])
-        if profile.work_schedule:
-            dados.append(["Horário", profile.work_schedule])
-        if profile.nationality:
-            dados.append(["Nacionalidade", profile.nationality])
-        if profile.employee_number:
-            dados.append(["Nº Colaborador", profile.employee_number])
+    def linha(rotulo, valor, bullets=True, estilo_valor=est_valor):
+        if bullets:
+            celula = Paragraph(f"<b>•</b> {escape(rotulo)}", est_rotulo)
+        else:
+            celula = para(rotulo, est_rotulo)
+        return [celula, para(valor, estilo_valor)]
 
-    if dados:
-        elems.append(Paragraph("Dados Profissionais", sec_estilo))
-        t = Table(dados, colWidths=[4 * cm, 12 * cm])
-        t.setStyle(TableStyle([
-            ("FONTSIZE", (0, 0), (-1, -1), 10),
+    def intervalo(inicio, fim):
+        inicio, fim = (str(inicio).strip() if inicio else ""), (str(fim).strip() if fim else "")
+        if inicio and fim:
+            return f"[{inicio} – {fim}]"
+        if inicio:
+            return f"[{inicio} – até à data]"
+        return f"[{fim}]" if fim else None
+
+    def data_extenso(valor):
+        if valor is None:
+            return None
+        if valor.month == 1:
+            return str(valor.year)
+        return f"{MESES_PT[valor.month - 1]} de {valor.year}"
+
+    def ano_de(valor):
+        """Ano a partir de uma data ou de uma string ISO (colunas JSON)."""
+        if not valor:
+            return None
+        if hasattr(valor, "year"):
+            return str(valor.year)
+        try:
+            return str(date.fromisoformat(str(valor)[:10]).year)
+        except ValueError:
+            return str(valor)
+
+    class TituloEspacado(Flowable):
+        """Título com espaçamento entre letras, como no formulário original."""
+
+        def __init__(self, texto, largura):
+            super().__init__()
+            self.texto, self.largura, self.altura = texto, largura, 1.7 * cm
+
+        def wrap(self, avail_width, avail_height):
+            self.largura = min(self.largura, avail_width)
+            return self.largura, self.altura
+
+        def draw(self):
+            c, espaco = self.canv, 1.5
+            primeiro, resto = self.texto[0], self.texto[1:]
+            c.setFont("Helvetica-Bold", 14)
+            larg_1 = c.stringWidth(primeiro, "Helvetica-Bold", 14) + espaco
+            c.setFont("Helvetica-Bold", 11)
+            larg_2 = c.stringWidth(resto, "Helvetica-Bold", 11) + espaco * max(len(resto) - 1, 0)
+            x, y = (self.largura - larg_1 - larg_2) / 2, self.altura - 14
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(x, y, primeiro)
+            texto = c.beginText(x + larg_1, y + 2.3)
+            texto.setFont("Helvetica-Bold", 11)
+            texto.setCharSpace(espaco)
+            texto.textOut(resto)
+            c.drawText(texto)
+
+    def tabela(linhas, larguras=None):
+        larguras = larguras or [larg_rotulo, larg_valor]
+        estilo = [
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("TEXTCOLOR", (0, 0), (0, -1), HexColor("#666666")),
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ]
+        if len(larguras) == 2:
+            estilo.append(("LEFTPADDING", (1, 0), (1, -1), vao))
+        t = Table(linhas, colWidths=larguras, splitByRow=1, splitInRow=1, hAlign="LEFT")
+        t.setStyle(TableStyle(estilo))
+        return t
+
+    def bloco_livre(texto, largura=larg_rotulo):
+        """Secções de texto livre (aptidões), escritas na coluna da esquerda."""
+        return tabela([[para(texto, est_livre)]], [largura])
+
+    def sub_titulo(texto):
+        # Centrado na coluna da esquerda, como no formulário original.
+        t = Table([[para(texto, est_sub)]], colWidths=[larg_rotulo + vao], hAlign="LEFT")
+        t.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
-        elems.append(t)
+        return t
 
-    # Formação académica.
-    if profile and profile.education and isinstance(profile.education, list) and len(profile.education) > 0:
-        elems.append(Paragraph("Formação Académica", sec_estilo))
-        for e in profile.education:
-            partes = [e.get("nivel", "")]
-            if e.get("ano_inicio"):
-                partes.append(f"({e['ano_inicio']}" + (f" – {e.get('ano_fim', '?')}" if e.get("ano_fim") else ")"))
-            if e.get("pais"):
-                partes.append(f"– {e['pais']}")
-            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+    elementos = []
 
-    # Experiência profissional.
-    if profile and profile.experience and isinstance(profile.experience, list) and len(profile.experience) > 0:
-        elems.append(Paragraph("Experiência Profissional", sec_estilo))
-        for x in profile.experience:
-            partes = []
+    # --- Cabeçalho: título (à esquerda) e fotografia (à direita) ---
+    foto = None
+    if profile and profile.photo_url:
+        dados_foto = fetch_image(profile.photo_url)
+        if dados_foto:
+            try:
+                foto = ReportImage(BytesIO(dados_foto), width=3.2 * cm, height=4.3 * cm,
+                                   kind="proportional")
+            except Exception:
+                foto = None
+
+    if foto is not None:
+        titulo = TituloEspacado("CURRÍCULO VITAE", larg_total - 4 * cm)
+        cabecalho = Table([[titulo, foto]], colWidths=[larg_total - 4 * cm, 4 * cm], hAlign="LEFT")
+        cabecalho.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
+            ("VALIGN", (1, 0), (1, 0), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+    else:
+        cabecalho = TituloEspacado("CURRÍCULO VITAE", larg_total)
+    elementos += [cabecalho, Spacer(1, 10)]
+
+    # --- INFORMAÇÃO PESSOAL ---
+    pessoais = [linha("Nome", user.full_name, bullets=False, estilo_valor=est_valor_nome)]
+    if profile:
+        if profile.address:
+            pessoais.append(linha("Morada", profile.address, bullets=False))
+        if profile.phone:
+            pessoais.append(linha("Telefone", profile.phone, bullets=False))
+    if user.email:
+        pessoais.append(linha("Correio electrónico", user.email, bullets=False))
+    if profile and profile.birth_date:
+        pessoais.append(linha("Data de nascimento",
+                              profile.birth_date.strftime("%d/%m/%Y"), bullets=False))
+    if profile and profile.nationality:
+        pessoais.append(linha("Nacionalidade", profile.nationality, bullets=False))
+    elementos += [cabecalho_secao("INFORMAÇÃO PESSOAL"), tabela(pessoais)]
+
+    # --- EXPERIÊNCIA PROFISSIONAL ---
+    experiencias = list(profile.experience or []) if profile else []
+    empregador_atual = empresa.name if empresa else None
+    if profile and (profile.job_title or empregador_atual):
+        if not any((x.get("onde") or "").strip().lower() == (empregador_atual or "").strip().lower()
+                   for x in experiencias):
+            experiencias.insert(0, {
+                "onde": empregador_atual,
+                "funcao": profile.job_title,
+                "datas": intervalo(data_extenso(profile.admission_date), None),
+            })
+    if experiencias:
+        linhas = []
+        for x in experiencias:
+            if not isinstance(x, dict):
+                continue
+            bloco = []
+            datas = x.get("datas") or intervalo(x.get("ano_inicio"), x.get("ano_fim"))
+            if datas:
+                bloco.append(linha("Datas (de – até)", datas))
             if x.get("onde"):
-                partes.append(f"<b>{x['onde']}</b>")
-            if x.get("ano_inicio"):
-                partes.append(f"({x['ano_inicio']}" + (f" – {x.get('ano_fim', '?')}" if x.get("ano_fim") else ")"))
+                bloco.append(linha("Nome e endereço do empregador", x["onde"]))
+            if x.get("sector"):
+                bloco.append(linha("Tipo de empresa ou sector", x["sector"]))
             if x.get("funcao"):
-                partes.append(f"— {x['funcao']}")
-            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+                bloco.append(linha("Função ou cargo ocupado", x["funcao"]))
+            if x.get("actividades"):
+                bloco.append(linha("Principais actividades e responsabilidades", x["actividades"]))
+            if bloco:
+                linhas += bloco + [["", ""]]
+        elementos += [
+            Spacer(1, 9), cabecalho_secao("EXPERIÊNCIA PROFISSIONAL"),
+            sub_titulo("Cargos e Funções"), tabela(linhas),
+        ]
 
-    # Cursos e certificações.
-    if profile and profile.certifications and isinstance(profile.certifications, list) and len(profile.certifications) > 0:
-        elems.append(Paragraph("Cursos e Certificações", sec_estilo))
-        for c in profile.certifications:
-            partes = []
-            if c.get("nome"):
-                partes.append(f"<b>{c['nome']}</b>")
-            if c.get("instituicao"):
-                partes.append(f"— {c['instituicao']}")
-            if c.get("data"):
-                partes.append(f"({c['data']})")
-            if c.get("validade"):
-                partes.append(f"válido até {c['validade']}")
-            elems.append(Paragraph(" &nbsp; ".join([p for p in partes if p]), corpo_estilo))
+    # --- FORMAÇÃO ACADÉMICA E PROFISSIONAL MAIS RELEVANTE ---
+    formacoes = [f for f in (profile.education or []) if isinstance(f, dict)] if profile else []
+    if not formacoes and profile and (profile.university or profile.course or profile.habilitacoes):
+        formacoes = [{
+            "nivel": profile.habilitacoes, "instituicao": profile.university,
+            "curso": profile.course, "areas": None, "pais": None,
+        }]
+    if formacoes:
+        linhas = []
+        for f in formacoes:
+            bloco = []
+            datas = intervalo(f.get("ano_inicio"), f.get("ano_fim"))
+            if datas:
+                bloco.append(linha("Datas (de – até)", datas))
+            instituicao = f.get("instituicao") or (profile.university if profile else None)
+            if instituicao and f.get("pais"):
+                instituicao = f"{instituicao} — {f['pais']}"
+            if instituicao:
+                bloco.append(linha("Nome e tipo de Organização de ensino ou formação", instituicao))
+            if f.get("areas"):
+                bloco.append(linha("Principais disciplinas/competências profissionais", f["areas"]))
+            elif f.get("curso"):
+                bloco.append(linha("Principais disciplinas/competências profissionais", f["curso"]))
+            if f.get("nivel"):
+                bloco.append(linha("Designação da qualificação atribuída", f["nivel"]))
+            if bloco:
+                linhas += bloco + [["", ""]]
+        elementos += [
+            Spacer(1, 9), cabecalho_secao("FORMAÇÃO ACADÉMICA E PROFISSIONAL MAIS RELEVANTE"),
+            tabela(linhas),
+        ]
 
-    # CV / notas.
+    # --- CURSOS E FORMAÇÃO COMPLEMENTARES ---
+    cursos = []
+    for c in (profile.certifications or []) if profile else []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("data"):
+            quando = ano_de(c["data"])
+        elif c.get("validade"):
+            quando = f"válido até {ano_de(c['validade'])}"
+        else:
+            quando = None
+        partes = [p for p in [quando, c.get("nome"), c.get("instituicao")] if p]
+        if partes:
+            cursos.append(" – ".join(str(p) for p in partes))
+    if cursos:
+        elementos += [
+            Spacer(1, 9), cabecalho_secao("CURSOS E FORMAÇÃO COMPLEMENTARES"),
+            tabela([["", para("\n".join(cursos), est_livre)]]),
+        ]
+
+    # --- IDIOMAS ---
+    idiomas = [
+        i for i in (profile.languages or []) if isinstance(i, dict) and i.get("nome")
+    ] if profile else []
+    if idiomas:
+        linhas = [[
+            para("Idioma", est_idioma_cab), para("Fala", est_idioma_cab),
+            para("Escreve", est_idioma_cab), para("Lê", est_idioma_cab),
+        ]]
+        for i in idiomas:
+            linhas.append([
+                para(i.get("nome")), para(i.get("fala")), para(i.get("escreve")), para(i.get("le")),
+            ])
+        elementos += [
+            Spacer(1, 9), cabecalho_secao("IDIOMAS"),
+            tabela(linhas, [6.5 * cm, 3.9 * cm, 3.9 * cm, 3.8 * cm]),
+        ]
+
+    # --- APTIDÕES E COMPETÊNCIAS (texto livre na coluna da esquerda) ---
+    if profile and profile.social_skills:
+        elementos += [Spacer(1, 9), cabecalho_secao("APTIDÕES E COMPETÊNCIAS SOCIAIS"),
+                      bloco_livre(profile.social_skills)]
+    if profile and profile.technical_skills:
+        elementos += [Spacer(1, 9), cabecalho_secao("APTIDÕES E COMPETÊNCIAS TÉCNICAS"),
+                      bloco_livre(profile.technical_skills)]
+
+    # --- PERFIL ---
     if profile and profile.cv:
-        elems.append(Paragraph("Notas", sec_estilo))
-        for linha in profile.cv.split("\n"):
-            elems.append(Paragraph(linha or "&nbsp;", corpo_estilo))
+        elementos += [Spacer(1, 9), cabecalho_secao("PERFIL"),
+                      tabela([["", para(profile.cv, est_livre)]])]
 
-    if not dados and not elems:
-        elems.append(Paragraph("Ficha sem dados preenchidos.", small_estilo))
+    # --- Local e data ---
+    hoje = date.today()
+    local = (profile.workplace if profile else None) or ""
+    elementos += [
+        Spacer(1, 14),
+        para(f"{local} {hoje.day:02d} de {MESES_PT[hoje.month - 1]} de {hoje.year}".strip(), est_livre),
+    ]
 
-    doc.build(elems)
+    buf = BytesIO()
+    doc = BaseDocTemplate(
+        buf, pagesize=A4, leftMargin=marg_esq, rightMargin=marg_dir,
+        topMargin=2 * cm, bottomMargin=1.5 * cm,
+        title=f"Curriculum Vitae — {user.full_name or 'Colaborador'}",
+        author=user.full_name or None,
+    )
+    # Frame sem padding: as margens passam a ser as medidas reais do formulário.
+    moldura = Frame(
+        marg_esq, 1.5 * cm, A4[0] - marg_esq - marg_dir, A4[1] - 2 * cm - 1.5 * cm,
+        id="cv", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+    )
+    doc.addPageTemplates([PageTemplate(id="cv", frames=[moldura])])
+    doc.build(elementos)
     buf.seek(0)
 
     filename = f"CV_{(user.full_name or 'colaborador').replace(' ', '_')}.pdf"
@@ -858,6 +1079,7 @@ def gerar_cv_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+
 
 
 # ---------- Ficha profissional completa em PDF ----------
@@ -879,8 +1101,6 @@ def gerar_ficha_pdf(
     from io import BytesIO
     from datetime import date
     from html import escape
-    from urllib.parse import urlparse
-    from urllib.request import Request, urlopen
     from fastapi.responses import StreamingResponse
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
@@ -890,6 +1110,7 @@ def gerar_ficha_pdf(
     from reportlab.lib.enums import TA_CENTER
     from app.models.company import Company
     from app.models.employee_profile import EmployeeProfile
+    from app.services.cloudinary_upload import fetch_image
 
     # Permissão: gestão de pessoas ou o próprio colaborador.
     if current_user.id != collaborator_id and current_user.role not in MANAGE_ROLES:
@@ -946,16 +1167,11 @@ def gerar_ficha_pdf(
     def foto_perfil():
         if not profile or not profile.photo_url:
             return None
+        dados = fetch_image(profile.photo_url)
+        if not dados:
+            return None
         try:
-            parsed = urlparse(str(profile.photo_url))
-            if parsed.scheme != "https" or parsed.hostname != "res.cloudinary.com":
-                return None
-            request = Request(str(profile.photo_url), headers={"User-Agent": "KAMBA-Ficha/1.0"})
-            with urlopen(request, timeout=10) as remote:
-                data = remote.read(5 * 1024 * 1024 + 1)
-            if not data or len(data) > 5 * 1024 * 1024:
-                return None
-            image = ReportImage(BytesIO(data), width=3.2 * cm, height=3.2 * cm, kind="proportional")
+            image = ReportImage(BytesIO(dados), width=3.2 * cm, height=3.2 * cm, kind="proportional")
             image.hAlign = "CENTER"
             return image
         except Exception:

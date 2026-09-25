@@ -54,3 +54,31 @@ def upload_file(file_bytes: bytes, filename: str, folder: str = "kamba") -> Opti
         # Não deixamos uma falha de upload impedir a criação do pedido.
         print(f"[CLOUDINARY] Falha no upload: {e}")
         return None
+
+
+def fetch_image(url: str, max_bytes: int = 5 * 1024 * 1024) -> Optional[bytes]:
+    """
+    Descarrega uma imagem já guardada no Cloudinary e devolve os bytes.
+
+    Só aceita HTTPS no host de entrega do Cloudinary e limita o tamanho, para
+    que a geração de PDF não dependa de um URL arbitrário guardado na base de
+    dados. Devolve None em qualquer falha (o PDF é gerado sem imagem).
+    """
+    from urllib.parse import urlparse
+    from urllib.request import Request, urlopen
+
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname != "res.cloudinary.com":
+            return None
+        request = Request(url, headers={"User-Agent": "KAMBA-PDF/1.0"})
+        with urlopen(request, timeout=10) as resposta:
+            dados = resposta.read(max_bytes + 1)
+        if not dados or len(dados) > max_bytes:
+            return None
+        return dados
+    except Exception as e:
+        print(f"[CLOUDINARY] Falha ao ler a imagem: {e}")
+        return None

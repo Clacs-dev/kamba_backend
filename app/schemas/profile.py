@@ -35,6 +35,14 @@ class CertificationItem(BaseModel):
     validade: date | None = None
 
 
+class LanguageItem(BaseModel):
+    """Um idioma do colaborador, com os níveis de fala, escrita e leitura."""
+    nome: str | None = Field(default=None, max_length=80)
+    fala: str | None = Field(default=None, max_length=40)
+    escreve: str | None = Field(default=None, max_length=40)
+    le: str | None = Field(default=None, max_length=40)
+
+
 class ProfileUpdate(BaseModel):
     """
     Campos da ficha que o Capital Humano preenche/atualiza.
@@ -63,6 +71,11 @@ class ProfileUpdate(BaseModel):
     university: str | None = Field(default=None, max_length=200)
     course: str | None = Field(default=None, max_length=200)
     birth_date: date | None = None
+    address: str | None = Field(default=None, max_length=300)
+    phone: str | None = Field(default=None, max_length=80)
+    languages: list[LanguageItem] | None = None
+    social_skills: str | None = None
+    technical_skills: str | None = None
     cv: str | None = None
     education: list[EducationItem] | None = None
     experience: list[ExperienceItem] | None = None
@@ -122,6 +135,11 @@ class ProfileOut(BaseModel):
     university: str | None
     course: str | None
     birth_date: date | None = None
+    address: str | None = None
+    phone: str | None = None
+    languages: list[LanguageItem] | None = None
+    social_skills: str | None = None
+    technical_skills: str | None = None
     cv: str | None
     education: list[EducationItem] | None = None
     experience: list[ExperienceItem] | None = None
