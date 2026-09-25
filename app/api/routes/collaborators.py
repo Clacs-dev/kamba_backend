@@ -879,11 +879,13 @@ def gerar_ficha_pdf(
     from io import BytesIO
     from datetime import date
     from html import escape
+    from urllib.parse import urlparse
+    from urllib.request import Request, urlopen
     from fastapi.responses import StreamingResponse
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
     from reportlab.lib.colors import HexColor
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as ReportImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.enums import TA_CENTER
     from app.models.company import Company
@@ -941,6 +943,24 @@ def gerar_ficha_pdf(
             return padrao
         return limpar(getattr(profile, campo))
 
+    def foto_perfil():
+        if not profile or not profile.photo_url:
+            return None
+        try:
+            parsed = urlparse(str(profile.photo_url))
+            if parsed.scheme != "https" or parsed.hostname != "res.cloudinary.com":
+                return None
+            request = Request(str(profile.photo_url), headers={"User-Agent": "KAMBA-Ficha/1.0"})
+            with urlopen(request, timeout=10) as remote:
+                data = remote.read(5 * 1024 * 1024 + 1)
+            if not data or len(data) > 5 * 1024 * 1024:
+                return None
+            image = ReportImage(BytesIO(data), width=3.2 * cm, height=3.2 * cm, kind="proportional")
+            image.hAlign = "CENTER"
+            return image
+        except Exception:
+            return None
+
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm,
                             topMargin=1.8 * cm, bottomMargin=1.8 * cm)
@@ -964,7 +984,12 @@ def gerar_ficha_pdf(
 
     # Cabeçalho do documento.
     elems.append(Paragraph("Ficha Profissional", titulo_estilo))
-    elems.append(Paragraph(limpar(user.full_name) or "Colaborador", sub_estilo))
+    foto = foto_perfil()
+    if foto is not None:
+        elems.append(foto)
+        elems.append(Spacer(1, 4))
+    else:
+        elems.append(Paragraph(limpar(user.full_name) or "Colaborador", sub_estilo))
     elems.append(Paragraph(empresa.name if empresa and empresa.name else "KAMBA", cab_estilo))
     elems.append(Paragraph(f"Impresso em {date.today().strftime('%d/%m/%Y')}", cab_estilo))
     elems.append(Spacer(1, 6))
