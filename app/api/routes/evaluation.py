@@ -716,6 +716,86 @@ def my_score_history(
     return result
 
 
+@router.get(
+    "/collaborators/{collaborator_id}/score-history",
+    response_model=list[ScoreHistoryItem],
+)
+def collaborator_score_history(
+    collaborator_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 3,
+):
+    """
+    Histórico das notas validadas de UM colaborador, para o Capital Humano ver a
+    evolução do desempenho na ficha/portal de outro colaborador.
+
+    É o mesmo dado de /me/score-history, mas de outro utilizador. Quem pode ver:
+    - o próprio colaborador;
+    - Capital Humano, Administração, Comissão e Admin;
+    - o director que avalia esse colaborador nalgum ciclo.
+    """
+    company_id = current_user.company_id
+
+    alvo = (
+        db.query(User)
+        .filter(User.id == collaborator_id, User.company_id == company_id)
+        .first()
+    )
+    if alvo is None:
+        raise HTTPException(
+            status_code=404, detail="Colaborador não encontrado nesta empresa."
+        )
+
+    pode_ver = current_user.id == collaborator_id or current_user.role in (
+        UserRole.CAPITAL_HUMANO,
+        UserRole.ADMINISTRACAO,
+        UserRole.COMISSAO_AVALIACAO,
+        UserRole.ADMIN,
+        UserRole.SUPERADMIN,
+    )
+    if not pode_ver and current_user.role == UserRole.DIRECTOR:
+        # O director só vê a evolução de quem ele próprio avalia.
+        pode_ver = (
+            db.query(Evaluation.id)
+            .filter(
+                Evaluation.company_id == company_id,
+                Evaluation.collaborator_id == collaborator_id,
+                Evaluation.director_id == current_user.id,
+            )
+            .first()
+            is not None
+        )
+    if not pode_ver:
+        raise HTTPException(
+            status_code=403, detail="Sem acesso ao histórico deste colaborador."
+        )
+
+    rows = (
+        db.query(Evaluation, EvaluationCycle)
+        .join(EvaluationCycle, Evaluation.cycle_id == EvaluationCycle.id)
+        .filter(
+            Evaluation.company_id == company_id,
+            Evaluation.collaborator_id == collaborator_id,
+            Evaluation.phase == EvaluationPhase.VALIDADA,
+        )
+        .order_by(EvaluationCycle.id.desc())
+        .limit(limit)
+        .all()
+    )
+    result = [
+        ScoreHistoryItem(
+            cycle_id=cyc.id,
+            cycle_name=cyc.name,
+            final_score=ev.final_score,
+            classification=ev.classification,
+        )
+        for ev, cyc in rows
+    ]
+    result.reverse()
+    return result
+
+
 # ---------- Comparação por componente (para o ecrã da comissão) ----------
 
 @router.get("/{evaluation_id}/comparison")
