@@ -54,11 +54,13 @@ def summary(
     )
     by_role = {role.value: count for role, count in by_role_rows}
 
-    # Distribuição por sexo: uma linha por colaboradores com a ficha preenchida
-    # e um JOIN por users para garantir o isolamento multi-tenant.
+    # Distribuição por sexo: parte-se dos utilizadores da empresa (LEFT JOIN) para
+    # que a soma seja sempre igual a `active` — quem ainda não tem ficha, ou tem
+    # ficha sem sexo, entra em `gender_por_definir` em vez de desaparecer.
+    # Filtrar por User.company_id garante o isolamento multi-tenant.
     gender_rows = (
         db.query(EmployeeProfile.gender, func.count(User.id))
-        .join(User, User.id == EmployeeProfile.user_id)
+        .outerjoin(EmployeeProfile, EmployeeProfile.user_id == User.id)
         .filter(User.company_id == cid)
         .group_by(EmployeeProfile.gender)
         .all()
