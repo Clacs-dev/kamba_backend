@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
+from app.models.employee_profile import EmployeeProfile
 from app.models.enums import UserRole, EvaluationPhase, DisciplinaryPhase
 from app.models.evaluation import Evaluation
 from app.models.disciplinary import DisciplinaryProcess
@@ -53,11 +54,27 @@ def summary(
     )
     by_role = {role.value: count for role, count in by_role_rows}
 
+    # Distribuição por sexo: uma linha por colaboradores com a ficha preenchida
+    # e um JOIN por users para garantir o isolamento multi-tenant.
+    gender_rows = (
+        db.query(EmployeeProfile.gender, func.count(User.id))
+        .join(User, User.id == EmployeeProfile.user_id)
+        .filter(User.company_id == cid)
+        .group_by(EmployeeProfile.gender)
+        .all()
+    )
+    by_gender: dict[str, int] = {
+        g.value: n for g, n in gender_rows if g is not None
+    }
+    gender_por_definir = sum(n for g, n in gender_rows if g is None)
+
     collaborators = CollaboratorsMetrics(
         total=total_collabs,
         active=active_collabs,
         inactive=total_collabs - active_collabs,
         by_role=by_role,
+        by_gender=by_gender,
+        gender_por_definir=gender_por_definir,
     )
 
     # --- Avaliações ---

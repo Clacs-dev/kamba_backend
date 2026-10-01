@@ -15,7 +15,7 @@ from sqlalchemy import String, Text, DateTime, Date, Time, ForeignKey, Enum, Uni
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.enums import ContractType, WorkScheduleType
+from app.models.enums import ContractType, WorkScheduleType, Gender
 
 
 def _now() -> datetime:
@@ -63,6 +63,7 @@ class EmployeeProfile(Base):
     )  # regime TURNO: turno da empresa a que o colaborador está associado
 
     situation_tags: Mapped[str | None] = mapped_column(String(300), nullable=True) # etiquetas livres, separadas por vírgula
+    gender: Mapped[Gender | None] = mapped_column(Enum(Gender), nullable=True)      # sexo (estatísticas de género no dashboard)
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)    # nacionalidade (ex.: Angolana)
     habilitacoes: Mapped[str | None] = mapped_column(String(200), nullable=True)  # habilitações literárias (ex.: Ensino Médio, Licenciatura)
     university: Mapped[str | None] = mapped_column(String(200), nullable=True)    # universidade de formação

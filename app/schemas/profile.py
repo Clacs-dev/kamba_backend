@@ -4,7 +4,7 @@ Schemas Pydantic — ficha detalhada do colaborador (secção 2.1).
 from datetime import date, datetime, time
 from pydantic import BaseModel, Field, model_validator
 
-from app.models.enums import ContractType, WorkScheduleType
+from app.models.enums import ContractType, WorkScheduleType, Gender
 
 
 class EducationItem(BaseModel):
@@ -66,6 +66,7 @@ class ProfileUpdate(BaseModel):
     shift_id: int | None = None
 
     situation_tags: str | None = Field(default=None, max_length=300)
+    gender: Gender | None = None
     nationality: str | None = Field(default=None, max_length=100)
     habilitacoes: str | None = Field(default=None, max_length=200)
     university: str | None = Field(default=None, max_length=200)
@@ -130,6 +131,7 @@ class ProfileOut(BaseModel):
     shift_id: int | None = None
 
     situation_tags: str | None
+    gender: Gender | None = None
     nationality: str | None
     habilitacoes: str | None
     university: str | None

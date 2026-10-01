@@ -37,6 +37,12 @@ class WorkScheduleType(str, enum.Enum):
     TURNO = "turno"  # associado a um turno (Shift) configurado pela empresa
 
 
+class Gender(str, enum.Enum):
+    """Sexo do colaborador (usado nas estatísticas de género do dashboard)."""
+    MASCULINO = "masculino"
+    FEMININO = "feminino"
+
+
 class DocumentType(str, enum.Enum):
     """Tipos de documento do dossier individual (secção 2.4)."""
     CONTRATO = "contrato"                        # contrato de trabalho

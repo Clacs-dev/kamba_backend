@@ -10,6 +10,8 @@ class CollaboratorsMetrics(BaseModel):
     active: int
     inactive: int
     by_role: dict[str, int]
+    by_gender: dict[str, int] = {}   # {'masculino': 13, 'feminino': 14}
+    gender_por_definir: int = 0      # fichas sem sexo preenchido
 
 
 class EvaluationMetrics(BaseModel):
