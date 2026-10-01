@@ -270,6 +270,9 @@ def create_collaborator(
                 company_id=company_id,
                 user_id=collaborator.id,
                 employee_number=novo_numero,
+                # Sexo escolhido no passo "Conta" do cadastro; o passo "Ficha"
+                # volta a gravá-lo com o resto dos dados profissionais.
+                gender=payload.gender,
             )
             db.add(perfil)
         else:

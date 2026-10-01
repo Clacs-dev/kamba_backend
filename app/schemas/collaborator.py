@@ -7,7 +7,7 @@ utilizadores da sua empresa.
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.enums import UserRole
+from app.models.enums import Gender, UserRole
 
 
 class CollaboratorRowOut(BaseModel):
@@ -55,6 +55,8 @@ class CollaboratorCreate(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=200)
     email: EmailStr
     role: UserRole = UserRole.COLABORADOR
+    # Escolhido já no passo "Conta" do cadastro, por baixo do nome completo.
+    gender: Gender | None = None
 
 
 class CollaboratorUpdate(BaseModel):
