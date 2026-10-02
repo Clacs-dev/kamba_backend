@@ -89,6 +89,12 @@ def summary(
         Evaluation.company_id == cid,
         Evaluation.phase.notin_([EvaluationPhase.VALIDADA, EvaluationPhase.FECHADA]),
     ).scalar() or 0
+    # Em disputa = na fase de comissão, ou seja com recurso interposto e por
+    # decidir. É um subconjunto das que estão em curso.
+    in_appeal_evals = db.query(func.count(Evaluation.id)).filter(
+        Evaluation.company_id == cid,
+        Evaluation.phase == EvaluationPhase.COMISSAO,
+    ).scalar() or 0
     below = db.query(func.count(Evaluation.id)).filter(
         Evaluation.company_id == cid,
         Evaluation.phase == EvaluationPhase.VALIDADA,
@@ -103,11 +109,22 @@ def summary(
     )
     by_classification = {c: n for c, n in class_rows}
 
+    # Média das notas já validadas (com nota atribuída) — base das
+    # recomendações de desempenho. Vira None se ainda não houver notas.
+    avg_score = db.query(func.avg(Evaluation.final_score)).filter(
+        Evaluation.company_id == cid,
+        Evaluation.phase == EvaluationPhase.VALIDADA,
+        Evaluation.final_score.isnot(None),
+    ).scalar()
+    avg_score = round(float(avg_score), 2) if avg_score is not None else None
+
     evaluations = EvaluationMetrics(
         total=total_evals,
         in_progress=in_progress_evals,
+        in_appeal=in_appeal_evals,
         validated=validated,
         below_threshold=below,
+        avg_score=avg_score,
         by_classification=by_classification,
     )
 

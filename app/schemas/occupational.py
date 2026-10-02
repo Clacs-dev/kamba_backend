@@ -35,3 +35,17 @@ class OverdueExam(BaseModel):
     last_exam_date: date
     next_exam_date: date
     days_overdue: int
+
+
+class ExamRow(BaseModel):
+    """Um exame na lista do Capital Humano, já com o nome do colaborador."""
+    id: int
+    collaborator_id: int
+    collaborator_name: str
+    fitness: FitnessResult
+    exam_date: date
+    next_exam_date: date | None
+    restriction_note: str | None
+    # Dias até ao próximo exame (negativo = já passou). None se não há data.
+    days_to_next: int | None
+    atrasado: bool

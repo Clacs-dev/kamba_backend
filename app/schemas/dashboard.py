@@ -17,8 +17,10 @@ class CollaboratorsMetrics(BaseModel):
 class EvaluationMetrics(BaseModel):
     total: int
     in_progress: int          # não validadas nem fechadas
+    in_appeal: int = 0        # na fase de comissão (recurso interposto)
     validated: int
     below_threshold: int      # validadas com nota < 3,5
+    avg_score: float | None = None   # média das notas das validadas
     by_classification: dict[str, int]
 
 

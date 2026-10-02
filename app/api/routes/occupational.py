@@ -14,15 +14,60 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.enums import UserRole
+from app.models.enums import UserRole, FitnessResult
 from app.models.occupational import OccupationalExam
-from app.schemas.occupational import ExamCreate, ExamOut, OverdueExam
+from app.schemas.occupational import ExamCreate, ExamOut, ExamRow, OverdueExam
 from app.api.deps import get_current_user, require_roles
 from app.services.audit import audit
 
 router = APIRouter(prefix="/occupational-health", tags=["occupational_health"])
 
 MANAGE_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
+
+
+@router.get("/exams", response_model=list[ExamRow])
+def list_exams(
+    search: str | None = None,
+    fitness: FitnessResult | None = None,
+    collaborator_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGE_ROLES)),
+):
+    """
+    Lista os exames da empresa com o nome do colaborador, para o Capital Humano
+    consultar e pesquisar. `search` filtra pelo nome (qualquer parte), `fitness`
+    pela aptidão e `collaborator_id` por colaborador exacto.
+    """
+    q = (
+        db.query(OccupationalExam, User)
+        .join(User, User.id == OccupationalExam.collaborator_id)
+        .filter(OccupationalExam.company_id == current_user.company_id)
+    )
+
+    if search:
+        q = q.filter(User.full_name.ilike(f"%{search.strip()}%"))
+    if fitness:
+        q = q.filter(OccupationalExam.fitness == fitness)
+    if collaborator_id:
+        q = q.filter(OccupationalExam.collaborator_id == collaborator_id)
+
+    rows = q.order_by(OccupationalExam.exam_date.desc(), User.full_name).all()
+
+    today = date.today()
+    return [
+        ExamRow(
+            id=exam.id,
+            collaborator_id=collab.id,
+            collaborator_name=collab.full_name,
+            fitness=exam.fitness,
+            exam_date=exam.exam_date,
+            next_exam_date=exam.next_exam_date,
+            restriction_note=exam.restriction_note,
+            days_to_next=(exam.next_exam_date - today).days if exam.next_exam_date else None,
+            atrasado=bool(exam.next_exam_date and exam.next_exam_date < today),
+        )
+        for exam, collab in rows
+    ]
 
 
 @router.post("/exams", response_model=ExamOut, status_code=status.HTTP_201_CREATED)
