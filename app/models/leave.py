@@ -6,11 +6,12 @@ Máquina de estados (do contrato):
 - Falta com documento: entra direto como justificada.
 - Maternidade: criada já como aprovada (registo administrativo do CH).
 O campo 'averbado' marca que foi averbado no mapa anual (secção 1.7).
+A classe LeaveMap marca que o mapa anual do exercício foi elaborado (art. 209.º).
 Isolamento por company_id.
 """
 from datetime import datetime, timezone, date
 
-from sqlalchemy import String, Text, Integer, Date, DateTime, Boolean, ForeignKey, Enum as SAEnum
+from sqlalchemy import String, Text, Integer, Date, DateTime, Boolean, ForeignKey, UniqueConstraint, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -50,3 +51,34 @@ class LeaveRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class LeaveMap(Base):
+    """
+    Mapa anual de férias elaborado (art. 209.º da LGT).
+
+    Regista, por empresa e por ano, que o Capital Humano já elaborou o mapa
+    anual sobre o qual os pedidos autorizados são averbados. A elaboração é
+    um marco do exercício: não impede pedidos, mas fica registada na auditoria
+    e é o que distingue "mapa por fazer" de "mapa em construção".
+    """
+    __tablename__ = "leave_maps"
+    __table_args__ = (UniqueConstraint("company_id", "ano", name="uq_leave_maps_empresa_ano"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    elaborado: Mapped[bool] = mapped_column(Boolean, default=False)
+    elaborado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    elaborado_por: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+

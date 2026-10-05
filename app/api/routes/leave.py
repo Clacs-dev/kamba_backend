@@ -9,10 +9,13 @@ Endpoints:
   POST /leave/requests/{id}/reject    -> director recusa (motivo)
   POST /leave/maternity           -> CH regista maternidade (multipart)
   POST /leave/requests/{id}/register  -> CH averba no mapa
-  GET  /leave/map?ano=            -> mapa anual (consolidado para CH, do departamento para director)
+  GET  /leave/map?ano=           -> mapa anual (consolidado para CH, do departamento para director)
+  GET  /leave/map/estado?ano=    -> se o mapa anual do ano ja foi elaborado
+  POST /leave/map/elaborar?ano=  -> CH elabora o mapa anual do ano (art. 209.º)
+  GET  /leave/maternity/candidates   -> colaboradoras elegiveis a maternidade
   GET  /leave/entitlements?ano=   -> direito a ferias por colaborador (22 dias por ano de ferias)
 """
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
@@ -20,8 +23,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.enums import UserRole, LeaveType, LeaveStatus
-from app.models.leave import LeaveRequest
+from app.models.enums import UserRole, LeaveType, LeaveStatus, Gender
+from app.models.leave import LeaveRequest, LeaveMap
 from app.models.employee_profile import EmployeeProfile
 from app.api.deps import get_current_user, require_roles
 from app.services.notifications import notify
@@ -38,6 +41,11 @@ router = APIRouter(prefix="/leave", tags=["leave"])
 ANNUAL = ANNUAL_DAYS  # dias de ferias por ano de ferias (22)
 CH_ROLES = (UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
 MAP_ROLES = (UserRole.DIRECTOR, UserRole.CAPITAL_HUMANO, UserRole.ADMINISTRACAO, UserRole.ADMIN)
+
+# Licença de maternidade (art. 253.º da LGT): 90 dias; em parto múltiplo são
+# 90 + 28 dias. O fim é calculado a partir do início, sem contar o dia extra.
+MATERNIDADE_DIAS = 90
+MATERNIDADE_DIAS_GEMELOS = 118
 
 
 def _count_days(a: date, b: date) -> int:
@@ -369,17 +377,76 @@ def reject_request(
 
 # ---------- 1.6 Maternidade (CH, multipart) ----------
 
+@router.get("/maternity/candidates")
+def maternity_candidates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+):
+    """
+    Colaboradoras a quem se pode registar licença de maternidade.
+
+    Filtra pelo sexo da ficha (art. 253.º da LGT). Se a empresa ainda não tiver
+    o sexo preenchido em nenhuma ficha, devolve todo o efectivo em vez de uma
+    lista vazia — registar a licença nunca deve ficar bloqueado por falta de
+    um dado de ficha.
+    """
+    equipa = _escopo(db, current_user)
+    com_sexo: list[dict] = []
+    sem_sexo: list[dict] = []
+    for u in equipa:
+        p = _perfil(db, u.id)
+        linha = {
+            "id": u.id,
+            "full_name": u.full_name,
+            "department": p.department if p else None,
+            "admission_date": p.admission_date.isoformat() if p and p.admission_date else None,
+        }
+        if p and p.gender == Gender.FEMININO:
+            com_sexo.append(linha)
+        elif not p or p.gender is None:
+            sem_sexo.append(linha)
+    return com_sexo or sem_sexo or [
+        {"id": u.id, "full_name": u.full_name, "department": None, "admission_date": None}
+        for u in equipa
+    ]
+
+
 @router.post("/maternity", status_code=201)
 async def register_maternity(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(*CH_ROLES)),
     collaborator_id: int = Form(...),
     inicio: date = Form(...),
-    fim: date = Form(...),
-    motivo: str = Form(...),
+    parto_multiplo: bool = Form(default=False),
+    fim: date | None = Form(default=None),
+    motivo: str | None = Form(default=None),
     documento: UploadFile | None = File(default=None),
 ):
-    """O Capital Humano regista uma licença de maternidade (entra já como aprovada)."""
+    """
+    O Capital Humano regista uma licença de maternidade (entra já como aprovada).
+
+    O fim é calculado a partir do inicio quando nao e enviado: 90 dias (art. 253.º
+    da LGT) ou 118 dias em parto multiplo (90 + 28). Enviar 'fim' sobrepoe-se a
+    esse calculo, para casos excepcionais.
+    """
+    dias = MATERNIDADE_DIAS_GEMELOS if parto_multiplo else MATERNIDADE_DIAS
+    fim_calc = inicio + timedelta(days=dias - 1)
+    fim_efetivo = fim or fim_calc
+    if fim_efetivo < inicio:
+        raise HTTPException(status_code=422, detail="A data de fim não pode ser anterior ao início.")
+
+    texto = (motivo or "").strip() or (
+        "Licença de maternidade — "
+        + ("parto múltiplo (90+28 dias)" if parto_multiplo else "90 dias")
+        + " (art. 253.º LGT), remunerada."
+    )
+
+    alvo = db.query(User).filter(
+        User.id == collaborator_id, User.company_id == current_user.company_id
+    ).first()
+    if not alvo:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+
     doc_name, doc_url = None, None
     if documento is not None:
         conteudo = await documento.read()
@@ -390,16 +457,16 @@ async def register_maternity(
         company_id=current_user.company_id,
         collaborator_id=collaborator_id,
         leave_type=LeaveType.MATERNIDADE,
-        start_date=inicio, end_date=fim,
-        days=_count_days(inicio, fim),
-        reason=motivo,
+        start_date=inicio, end_date=fim_efetivo,
+        days=_count_days(inicio, fim_efetivo),
+        reason=texto,
         document_name=doc_name, document_url=doc_url,
         status=LeaveStatus.APROVADA,
     )
     db.add(r)
     audit(db, actor=current_user, action="ausencia.maternidade_registada",
-          detail=f"Licença de maternidade do colaborador {collaborator_id} "
-                 f"({inicio.isoformat()} a {fim.isoformat()}).")
+          detail=f"Licença de maternidade de {alvo.full_name} "
+                 f"({inicio.isoformat()} a {fim_efetivo.isoformat()}, {r.days} dias).")
     db.commit()
     db.refresh(r)
 
@@ -410,7 +477,7 @@ async def register_maternity(
         company_id=current_user.company_id, collaborator_id=collaborator_id,
         event_type=CareerEventType.OUTRO, event_date=inicio,
         title="Licença de maternidade",
-        description=f"Licença de maternidade de {inicio.isoformat()} a {fim.isoformat()}.",
+        description=f"Licença de maternidade de {inicio.isoformat()} a {fim_efetivo.isoformat()}.",
     ))
     notify(db, company_id=current_user.company_id, user_id=collaborator_id,
            title="Licença de maternidade registada",
@@ -495,6 +562,81 @@ def register_in_map(
 
 # ---------- 1.9 Mapa de ferias ----------
 
+def _mapa_do_ano(db: Session, company_id: int, ano: int) -> LeaveMap | None:
+    return (
+        db.query(LeaveMap)
+        .filter(LeaveMap.company_id == company_id, LeaveMap.ano == ano)
+        .first()
+    )
+
+
+def _estado_mapa(db: Session, company_id: int, ano: int) -> dict:
+    m = _mapa_do_ano(db, company_id, ano)
+    elaborado_por = None
+    if m and m.elaborado_por:
+        u = db.query(User).filter(User.id == m.elaborado_por).first()
+        elaborado_por = u.full_name if u else None
+    return {
+        "ano": ano,
+        "elaborado": bool(m and m.elaborado),
+        "elaborado_em": m.elaborado_em.isoformat() if m and m.elaborado_em else None,
+        "elaborado_por": elaborado_por,
+    }
+
+
+@router.get("/map/estado")
+def map_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*MAP_ROLES)),
+    ano: int | None = None,
+):
+    """
+    Estado do mapa anual de ferias (art. 209.º da LGT).
+
+    O director ve o estado do mesmo mapa da empresa — so o Capital Humano o
+    elabora. Leitura para qualquer perfil com acesso ao mapa.
+    """
+    return _estado_mapa(db, current_user.company_id, ano or date.today().year)
+
+
+@router.post("/map/elaborar")
+def build_annual_map(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(*CH_ROLES)),
+    ano: int | None = None,
+):
+    """
+    O Capital Humano elabora a base do mapa de ferias do ano (art. 209.º da LGT).
+
+    Idempotente:Elaborar de novo apenas actualiza a marca e o registo de
+    auditoria. A partir daqui os pedidos autorizados sao averbados no mapa.
+    """
+    year = ano or date.today().year
+    m = _mapa_do_ano(db, current_user.company_id, year)
+    if m is None:
+        m = LeaveMap(company_id=current_user.company_id, ano=year)
+        db.add(m)
+    m.elaborado = True
+    m.elaborado_em = datetime.now(timezone.utc)
+    m.elaborado_por = current_user.id
+    audit(db, actor=current_user, action="ausencia.mapa_elaborado",
+          detail=f"Mapa de férias {year} elaborado.")
+    db.flush()
+
+    # A Administração acompanha o mapa elaborated (visão de gestão do demo).
+    for u in db.query(User).filter(
+        User.company_id == current_user.company_id,
+        User.role.in_((UserRole.ADMINISTRACAO, UserRole.ADMIN)),
+    ).all():
+        notify(db, company_id=current_user.company_id, user_id=u.id,
+               title=f"Mapa de férias {year} elaborado",
+               message=f"O mapa de férias {year} foi elaborado — disponível para consulta.",
+               category="ausencia", link="/ausencias")
+    db.commit()
+    db.refresh(m)
+    return _estado_mapa(db, current_user.company_id, year)
+
+
 @router.get("/map")
 def annual_map(
     db: Session = Depends(get_db),
@@ -578,4 +720,5 @@ def annual_map(
             "ausencias": sum(len(c["ausencias"]) for c in colaboradores),
             "sem_direito": sum(1 for c in colaboradores if not c["pode_pedir"]),
         },
+        **_estado_mapa(db, current_user.company_id, year),
     }
