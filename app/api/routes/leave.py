@@ -61,6 +61,27 @@ def _perfil(db: Session, user_id: int) -> EmployeeProfile | None:
     return db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).first()
 
 
+def _perfis(db: Session, user_ids: list[int]) -> dict[int, EmployeeProfile]:
+    """Fichas de varios utilizadores numa unica consulta (evita N+1)."""
+    if not user_ids:
+        return {}
+    linhas = (
+        db.query(EmployeeProfile)
+        .filter(EmployeeProfile.user_id.in_(user_ids))
+        .all()
+    )
+    return {p.user_id: p for p in linhas}
+
+
+def _nomes(db: Session, user_ids) -> dict[int, str]:
+    """Nomes completos de varios utilizadores numa unica consulta."""
+    ids = sorted({i for i in user_ids if i is not None})
+    if not ids:
+        return {}
+    linhas = db.query(User.id, User.full_name).filter(User.id.in_(ids)).all()
+    return {uid: nome for uid, nome in linhas}
+
+
 def _direccao(db: Session, user: User) -> str:
     p = _perfil(db, user.id)
     return (p.department or "") if p else ""
@@ -86,15 +107,22 @@ def _escopo(db: Session, user: User) -> list[User]:
     if not alvo:
         # Director sem Direccao definida na ficha -> nao tem equipa atribuivel.
         return []
-    return [u for u in q.order_by(User.full_name).all() if _norm_dept(_direccao(db, u)) == alvo]
+    candidatos = q.order_by(User.full_name).all()
+    # Uma unica consulta de fichas em vez de uma por candidato.
+    perfis = _perfis(db, [u.id for u in candidatos])
+
+    def departamento(u: User) -> str:
+        p = perfis.get(u.id)
+        return _norm_dept(p.department if p else None)
+
+    return [u for u in candidatos if departamento(u) == alvo]
 
 
-def _out(db: Session, r: LeaveRequest) -> dict:
+def _out(db: Session, r: LeaveRequest, nome: str | None = None) -> dict:
     """Serializa um pedido no formato do contrato (com collaborator_name)."""
-    nome = None
-    u = db.query(User).filter(User.id == r.collaborator_id).first()
-    if u:
-        nome = u.full_name
+    if nome is None:
+        u = db.query(User).filter(User.id == r.collaborator_id).first()
+        nome = u.full_name if u else None
     return {
         "id": r.id,
         "collaborator_id": r.collaborator_id,
@@ -181,6 +209,37 @@ def _consumo(db: Session, company_id: int, ano: int, collaborator_id: int) -> tu
     return gozados, marcados, em_curso
 
 
+def _consumo_lote(
+    db: Session, company_id: int, ano: int, collaborator_ids: list[int]
+) -> dict[int, tuple[int, int, int]]:
+    """Mesmo calculo de _consumo para muitos colaboradores, numa unica consulta."""
+    hoje = date.today()
+    acc: dict[int, list[int]] = {i: [0, 0, 0] for i in collaborator_ids}
+    linhas = (
+        db.query(LeaveRequest)
+        .filter(
+            LeaveRequest.company_id == company_id,
+            LeaveRequest.collaborator_id.in_(collaborator_ids or [-1]),
+            LeaveRequest.leave_type == LeaveType.FERIAS,
+            LeaveRequest.status == LeaveStatus.APROVADA,
+        )
+        .all()
+    )
+    for r in linhas:
+        if r.start_date.year != ano and r.end_date.year != ano:
+            continue
+        registo = acc.get(r.collaborator_id)
+        if registo is None:
+            continue
+        if r.end_date < hoje:
+            registo[0] += r.days
+        elif r.start_date > hoje:
+            registo[1] += r.days
+        else:
+            registo[2] += r.days
+    return {i: (g, m, c) for i, (g, m, c) in acc.items()}
+
+
 @router.get("/entitlements")
 def list_entitlements(
     db: Session = Depends(get_db),
@@ -190,11 +249,15 @@ def list_entitlements(
     """Direito a ferias de cada colaborador do escopo, lido da data de admissao."""
     year = ano or date.today().year
     linhas = []
-    for u in _escopo(db, current_user):
-        p = _perfil(db, u.id)
+    equipa = _escopo(db, current_user)
+    ids = [u.id for u in equipa]
+    perfis = _perfis(db, ids)
+    consumo = _consumo_lote(db, current_user.company_id, year, ids)
+    for u in equipa:
+        p = perfis.get(u.id)
         adm = p.admission_date if p else None
         dados = entitlement_for_year(adm, year)
-        g, m, c = _consumo(db, current_user.company_id, year, u.id)
+        g, m, c = consumo.get(u.id, (0, 0, 0))
         finalise(dados, g, m, c)
         linhas.append({
             "collaborator_id": u.id,
@@ -227,7 +290,8 @@ def list_requests(
         ids = [u.id for u in _escopo(db, current_user)]
         q = q.filter(LeaveRequest.collaborator_id.in_(ids or [-1]))
     rows = q.order_by(LeaveRequest.id.desc()).all()
-    return [_out(db, r) for r in rows]
+    nomes = _nomes(db, [r.collaborator_id for r in rows])
+    return [_out(db, r, nome=nomes.get(r.collaborator_id)) for r in rows]
 
 
 def _pertence_a_equipa(db: Session, user: User, r: LeaveRequest) -> bool:
@@ -391,10 +455,11 @@ def maternity_candidates(
     um dado de ficha.
     """
     equipa = _escopo(db, current_user)
+    perfis = _perfis(db, [u.id for u in equipa])
     com_sexo: list[dict] = []
     sem_sexo: list[dict] = []
     for u in equipa:
-        p = _perfil(db, u.id)
+        p = perfis.get(u.id)
         linha = {
             "id": u.id,
             "full_name": u.full_name,
@@ -653,6 +718,11 @@ def annual_map(
     year = ano or date.today().year
     equipa = _escopo(db, current_user)
     ids = [u.id for u in equipa]
+    # Tudo em lote: uma consulta de fichas, uma de consumo e os nomes vem da
+    # propria equipa — em vez de duas consultas por colaborador.
+    perfis = _perfis(db, ids)
+    consumo = _consumo_lote(db, current_user.company_id, year, ids)
+    nomes = {u.id: u.full_name for u in equipa}
 
     pedidos = (
         db.query(LeaveRequest)
@@ -671,9 +741,9 @@ def annual_map(
 
     colaboradores = []
     for u in equipa:
-        p = _perfil(db, u.id)
+        p = perfis.get(u.id)
         dados = entitlement_for_year(p.admission_date if p else None, year)
-        g, m, c = _consumo(db, current_user.company_id, year, u.id)
+        g, m, c = consumo.get(u.id, (0, 0, 0))
         finalise(dados, g, m, c)
 
         ferias = [r for r in no_ano
@@ -687,8 +757,8 @@ def annual_map(
             "department": p.department if p else None,
             "admission_date": p.admission_date.isoformat() if p and p.admission_date else None,
             **dados,
-            "ferias": [_out(db, r) for r in ferias],
-            "ausencias": [_out(db, r) for r in outras],
+            "ferias": [_out(db, r, nome=nomes.get(r.collaborator_id)) for r in ferias],
+            "ausencias": [_out(db, r, nome=nomes.get(r.collaborator_id)) for r in outras],
         })
 
     por_departamento: dict[str, int] = {}
